@@ -31,6 +31,29 @@ type RouteComponentType =
   | 'errorComponent'
   | 'notFoundComponent'
 
+/**
+ * A native reasonless `abort()` eagerly creates its AbortError, which formats a
+ * stack in Chromium and Node. Most router signals are never read, so the native
+ * abort waits until the signal is. `_a` is the internal aborted authority.
+ */
+export class RouterAbortController extends AbortController {
+  declare _a?: [reason: unknown]
+  declare _o?: true
+  override get signal(): AbortSignal {
+    this._o = true
+    if (this._a) {
+      super.abort(this._a[0])
+    }
+    return super.signal
+  }
+  override abort(reason?: unknown): void {
+    this._a ||= [reason]
+    if (this._o) {
+      super.abort(this._a[0])
+    }
+  }
+}
+
 export function replaceRouteChunk(
   route: AnyRoute,
   lazyFn: AnyRoute['lazyFn'],
@@ -216,7 +239,7 @@ type IndexedOutcome = [index: number, outcome: LoaderOutcome, boundary?: number]
 
 export type LoaderFlight = [
   outcome: Promise<RawLoaderOutcome>,
-  controller: AbortController,
+  controller: RouterAbortController,
   leases: number,
 ]
 
@@ -236,7 +259,7 @@ declare const matchPhase: unique symbol
 type SettledMatch = WorkMatch & { readonly [matchPhase]: 'settled' }
 
 export type LoadTransaction = [
-  controller: AbortController,
+  controller: RouterAbortController,
   redirects: number,
   location: ParsedLocation,
   matches: Array<AnyRouteMatch>,
@@ -281,7 +304,7 @@ type BackgroundLoaderTask = [
 ]
 
 type ExecuteLaneOptions = [
-  controller: AbortController,
+  controller: RouterAbortController,
   redirects: number,
   base: Array<AnyRouteMatch>,
   preload?: boolean,
@@ -303,8 +326,9 @@ function isControl(
 
 export function waitFor<T>(
   value: T | PromiseLike<T>,
-  signal: AbortSignal,
+  controller: AbortController,
 ): Promise<T> {
+  const signal = controller.signal
   if (signal.aborted) {
     return Promise.race([Promise.reject(signal), value])
   }
@@ -363,7 +387,7 @@ function normalizeLaneError(
   cause: unknown,
   options: ExecuteLaneOptions,
 ): LoaderOutcome {
-  if (options[0 /* controller */].signal.aborted) {
+  if (options[0 /* controller */]._a) {
     return CANCELED_OUTCOME
   }
   return materializeRedirect(
@@ -384,7 +408,7 @@ async function contextualize(
   retainedEnd: number,
 ): Promise<IndexedOutcome | undefined> {
   const [location, matches] = lane
-  const signal = options[0 /* controller */].signal
+  const controller = options[0 /* controller */]
   const preload = !!options[3 /* preload */]
   for (let index = options[6 /* resolvedPrefix */] ?? 0; index < end; index++) {
     const match = matches[index]!
@@ -427,7 +451,7 @@ async function contextualize(
       releaseFlight(router, match)
       return [index, normalizeLaneError(router, lane, route, cause, options)]
     }
-    if (signal.aborted) {
+    if (controller._a) {
       return [index, CANCELED_OUTCOME]
     }
     const validationError = match.paramsError ?? match.searchError
@@ -459,9 +483,9 @@ async function contextualize(
       // Always await to give a queued replacement navigation one microtask to
       // kick in before checking cancellation, even for synchronous context.
       const result = await (typeof value?.then === 'function'
-        ? waitFor(value, signal)
+        ? waitFor(value, controller)
         : value)
-      if (signal.aborted) {
+      if (controller._a) {
         return [index, CANCELED_OUTCOME]
       }
       const outcome = materializeRedirect(
@@ -497,7 +521,7 @@ function releaseOwnedFlight(
   router: AnyRouter,
   match: WorkMatch,
   flight?: LoaderFlight,
-): AbortController | undefined {
+): RouterAbortController | undefined {
   if (!flight || --flight[2 /* leases */]) {
     return
   }
@@ -505,7 +529,7 @@ function releaseOwnedFlight(
     const current = router._tx
     if (
       current &&
-      !current[0 /* controller */].signal.aborted &&
+      !current[0 /* controller */]._a &&
       !current[3 /* matches */].includes(match) &&
       current[3 /* matches */].some((candidate) => candidate.id === match.id) &&
       current[3 /* matches */].some(
@@ -627,8 +651,7 @@ async function loadResource(
   options: ExecuteLaneOptions,
 ): Promise<LoaderOutcome> {
   const owner = options[0 /* controller */]
-  const signal = owner.signal
-  if (signal.aborted) {
+  if (owner._a) {
     return CANCELED_OUTCOME
   }
   if (!loader) {
@@ -639,7 +662,7 @@ async function loadResource(
   setFetching(router, match, 'loader', owner)
   try {
     if (!flight) {
-      const controller = new AbortController()
+      const controller = new RouterAbortController()
       flight = [
         Promise.resolve()
           .then(() =>
@@ -686,11 +709,11 @@ async function loadResource(
       router,
       lane,
       route,
-      await waitFor(flight[0 /* outcome */], signal),
+      await waitFor(flight[0 /* outcome */], owner),
       options,
     )
   } catch (cause) {
-    if (cause !== signal || !signal.aborted) {
+    if (!owner._a || cause !== owner.signal) {
       throw cause
     }
     releaseFlight(router, match)
@@ -799,7 +822,7 @@ function createLoaderTask(
           ),
         )
       }
-      if (options[0 /* controller */].signal.aborted) {
+      if (options[0 /* controller */]._a) {
         reloadFailure = CANCELED_OUTCOME
       }
     }
@@ -902,7 +925,7 @@ function createLoaderTask(
           if (result[0 /* kind */] === SUCCESS) {
             // A settled generation can outlive its lane without keeping unresolved
             // navigation work alive.
-            if (routeLoader && !options[0 /* controller */].signal.aborted) {
+            if (routeLoader && !options[0 /* controller */]._a) {
               cacheLoaderMatch(router, match, plannedCacheMatch)
             }
             // A route is renderable only after both its data and normal component
@@ -922,7 +945,7 @@ function createLoaderTask(
     try {
       const chunk = loadRouteChunk(route, undefined, onLazyReady)
       if (chunk) {
-        await waitFor(chunk, options[0 /* controller */].signal)
+        await waitFor(chunk, options[0 /* controller */])
       }
     } catch (cause) {
       if (
@@ -946,7 +969,7 @@ function createLoaderTask(
       blocking &&
       result[0 /* kind */] === SUCCESS &&
       match.status === 'pending' &&
-      !options[0 /* controller */].signal.aborted
+      !options[0 /* controller */]._a
     ) {
       match.status = 'success'
       onReady?.()
@@ -992,7 +1015,7 @@ async function getNotFoundBoundary(
   router: AnyRouter,
   matches: Array<WorkMatch>,
   indexed: IndexedOutcome | undefined,
-  signal: AbortSignal,
+  controller: RouterAbortController,
   fallback = 0,
 ): Promise<number> {
   const cause = indexed?.[1 /* outcome */][1 /* error or redirect */] as
@@ -1009,10 +1032,10 @@ async function getNotFoundBoundary(
     try {
       const loading = loadRouteChunk(route, false)
       if (loading) {
-        await waitFor(loading, signal)
+        await waitFor(loading, controller)
       }
     } catch (cause) {
-      if (cause === signal && signal.aborted) {
+      if (controller._a && cause === controller.signal) {
         throw cause
       }
     }
@@ -1137,7 +1160,7 @@ async function reduceLane(
   router: AnyRouter,
   lane: ContextualizedLane,
   tasks: Array<LoaderTask>,
-  controller: AbortController,
+  controller: RouterAbortController,
   settlement: Promise<IndexedOutcome | undefined>,
   onReady?: () => void,
 ): Promise<ReducedLane | ControlOutcome> {
@@ -1147,7 +1170,7 @@ async function reduceLane(
   const plannedBoundary = matches.findIndex((match) => match._notFound)
   const boundaryOf = (found: IndexedOutcome) =>
     found[1 /* outcome */][0 /* kind */] === NOT_FOUND
-      ? getNotFoundBoundary(router, matches, found, controller.signal)
+      ? getNotFoundBoundary(router, matches, found, controller)
       : found[0 /* index */]
   let readinessEnd = plannedBoundary < 0 ? matches.length : plannedBoundary
 
@@ -1243,10 +1266,10 @@ async function reduceLane(
               loadRouteChunk(route),
               loadRouteChunk(route, 'notFoundComponent'),
             ]),
-        controller.signal,
+        controller,
       )
     } catch (cause) {
-      if (cause === controller.signal && controller.signal.aborted) {
+      if (controller._a && cause === controller.signal) {
         discardBackground(router, lane)
         return CANCELED_OUTCOME
       }
@@ -1274,7 +1297,7 @@ async function reduceLane(
 export async function projectLane(
   router: AnyRouter,
   lane: ReducedLane,
-  signal: AbortSignal,
+  controller: RouterAbortController,
   start = 0,
   end = lane[1 /* matches */].length,
 ): Promise<ProjectedLane> {
@@ -1296,7 +1319,7 @@ export async function projectLane(
             routeOptions.head?.(context),
             routeOptions.scripts?.(context),
           ]),
-          signal,
+          controller,
         )
         match.meta = head?.meta
         match.links = head?.links
@@ -1304,7 +1327,7 @@ export async function projectLane(
         match.styles = head?.styles
         match.scripts = scripts
       } catch (cause) {
-        if (cause === signal && signal.aborted) {
+        if (controller._a && cause === controller.signal) {
           break
         }
         console.error(cause)
@@ -1324,7 +1347,7 @@ async function executeClientLane(
   options: ExecuteLaneOptions,
 ): Promise<LaneResult> {
   const matched = [location, matches as Array<WorkMatch>] as MatchedLane
-  const signal = options[0 /* controller */].signal
+  const controller = options[0 /* controller */]
   let reduced: ReducedLane | ControlOutcome
   try {
     const presented = router.stores.matches.get()
@@ -1334,7 +1357,7 @@ async function executeClientLane(
         router,
         matches as Array<WorkMatch>,
         undefined,
-        signal,
+        controller,
         plannedBoundary,
       )
       matches[plannedBoundary]!._notFound = undefined
@@ -1368,7 +1391,7 @@ async function executeClientLane(
       : undefined
     const planSuccessfulLane = () => {
       for (let index = start; index < end; index++) {
-        if (signal.aborted) {
+        if (controller._a) {
           break
         }
         semanticParent = createLoaderTask(
@@ -1401,7 +1424,7 @@ async function executeClientLane(
           router,
           matches as Array<WorkMatch>,
           failure,
-          signal,
+          controller,
         )
         failure[2 /* boundary */] = boundary
         end = Math.min(end, boundary + 1)
@@ -1410,7 +1433,7 @@ async function executeClientLane(
       }
       planSuccessfulLane()
     }
-    if (!signal.aborted && !options[3 /* preload */]) {
+    if (!controller._a && !options[3 /* preload */]) {
       const abort: Array<AbortController> = []
       for (const [id, flight] of router._flights ?? []) {
         if (!flight[2 /* leases */]) {
@@ -1445,7 +1468,7 @@ async function executeClientLane(
     reduced = await reduction
   } catch (cause) {
     discardBackground(router, matched)
-    if (cause === signal && signal.aborted) {
+    if (controller._a && cause === controller.signal) {
       return CANCELED_OUTCOME
     }
     throw cause
@@ -1456,7 +1479,7 @@ async function executeClientLane(
   return projectLane(
     router,
     reduced,
-    signal,
+    controller,
     options[6 /* resolvedPrefix */] === matches.length
       ? options[6 /* resolvedPrefix */]
       : 0,
@@ -1607,7 +1630,7 @@ async function awaitPendingMinimum(
       new Promise<void>((resolve) => {
         timer = setTimeout(resolve, remaining)
       }),
-      tx[0 /* controller */].signal,
+      tx[0 /* controller */],
     )
   } catch {}
   clearTimeout(timer)
@@ -1801,7 +1824,7 @@ async function runBackground(
     }
     return
   }
-  await projectLane(router, reduced, tx[0 /* controller */].signal)
+  await projectLane(router, reduced, tx[0 /* controller */])
   if (router._tx !== tx || router._committed !== base) {
     transferMatchResources(router, next)
     return
@@ -1961,7 +1984,7 @@ export async function loadClientRoute(
   const hydrationController = rematerialize
     ? undefined
     : handoff?.[0 /* claim */]()
-  const preflight = new AbortController()
+  const preflight = new RouterAbortController()
   const previousPreflight = router._preflight
   router._preflight = preflight
   if (!rematerialize && !hydrationController) {
@@ -1970,14 +1993,14 @@ export async function loadClientRoute(
   previousPreflight?.abort()
   // The preflight controller is not exposed to route hooks. Every replacement
   // aborts its predecessor, so a live signal is the sole authority here.
-  if (!preflight.signal.aborted) {
+  if (!preflight._a) {
     const changeInfo = getLocationChangeInfo(location, resolvedLocation)
     router.emit({ type: 'onBeforeNavigate', ...changeInfo })
-    if (!preflight.signal.aborted) {
+    if (!preflight._a) {
       router.emit({ type: 'onBeforeLoad', ...changeInfo })
     }
   }
-  if (preflight.signal.aborted) {
+  if (preflight._a) {
     await awaitCurrent(router, previousOwner)
     return
   }
@@ -1999,7 +2022,7 @@ export async function loadClientRoute(
   } else {
     hydrationController?.abort()
   }
-  if (preflight.signal.aborted) {
+  if (preflight._a) {
     transferMatchResources(router, matches)
     await awaitCurrent(router, previousOwner)
     return
@@ -2140,7 +2163,7 @@ export async function preloadClientRoute<
   )
   for (let redirects = 0; ; redirects++) {
     const base = router._committed
-    const controller = new AbortController()
+    const controller = new RouterAbortController()
     let matches: Array<AnyRouteMatch> | undefined
     let active: boolean | Map<AbortController, Array<AnyRouteMatch>> | undefined
     let result: LaneResult
@@ -2232,7 +2255,7 @@ export async function hydrate(router: AnyRouter): Promise<void> {
 
   const dehydratedMatches = dehydratedRouter!.matches
 
-  const controller = new AbortController()
+  const controller = new RouterAbortController()
   const previousPreflight = router._preflight
   router._preflight = controller
   previousPreflight?.abort()
@@ -2246,7 +2269,7 @@ export async function hydrate(router: AnyRouter): Promise<void> {
   try {
     await waitFor(
       router.options.hydrate?.(dehydratedRouter!.dehydratedData),
-      controller.signal,
+      controller,
     )
     if (!isCurrent()) {
       return
@@ -2393,7 +2416,7 @@ export async function hydrate(router: AnyRouter): Promise<void> {
   try {
     while (
       chunkFailure < chunks.length &&
-      (await waitFor(chunks[chunkFailure]!, controller.signal))
+      (await waitFor(chunks[chunkFailure]!, controller))
     ) {
       chunkFailure++
     }
@@ -2472,7 +2495,7 @@ export async function hydrate(router: AnyRouter): Promise<void> {
   await projectLane(
     router,
     [location, candidates] as any,
-    controller.signal,
+    controller,
     0,
     verifiedAssetEnd,
   )
@@ -2509,7 +2532,7 @@ export async function hydrate(router: AnyRouter): Promise<void> {
       historyLocation.state === handoffHistoryState &&
       router._committed === committedMatches &&
       committedMatches.length &&
-      !controller.signal.aborted
+      !controller._a
       ? controller
       : undefined
   }

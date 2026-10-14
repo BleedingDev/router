@@ -16,7 +16,7 @@ describe('waitFor', () => {
       const remove = vi.spyOn(controller.signal, 'removeEventListener')
       const value =
         outcome === 'resolve' ? Promise.resolve(42) : Promise.reject(42)
-      const result = waitFor(value, controller.signal)
+      const result = waitFor(value, controller)
       if (outcome === 'resolve') {
         await expect(result).resolves.toBe(42)
       } else {
@@ -38,7 +38,7 @@ describe('waitFor', () => {
     const value = new Promise<never>((_, reject) => {
       rejectValue = reject
     })
-    const result = waitFor(value, controller.signal)
+    const result = waitFor(value, controller)
     const canceled = expect(result).rejects.toBe(controller.signal)
 
     controller.abort()
@@ -64,7 +64,7 @@ describe('waitFor', () => {
       },
     }
 
-    await expect(waitFor(value, controller.signal)).rejects.toBe(error)
+    await expect(waitFor(value, controller)).rejects.toBe(error)
     await new Promise((resolve) => setTimeout(resolve, 0))
 
     expect(add).toHaveBeenCalledOnce()
@@ -79,12 +79,10 @@ describe('waitFor', () => {
     const error = new Error('late failure')
     controller.abort()
 
-    await expect(waitFor(undefined, controller.signal)).rejects.toBe(
+    await expect(waitFor(undefined, controller)).rejects.toBe(controller.signal)
+    await expect(waitFor(Promise.reject(error), controller)).rejects.toBe(
       controller.signal,
     )
-    await expect(
-      waitFor(Promise.reject(error), controller.signal),
-    ).rejects.toBe(controller.signal)
 
     await Promise.resolve()
   })
