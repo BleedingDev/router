@@ -35,10 +35,13 @@ type RouteComponentType =
  * A native reasonless `abort()` eagerly creates its AbortError, which formats a
  * stack in Chromium and Node. Most router signals are never read, so the native
  * abort waits until the signal is. `_a` is the internal aborted authority.
+ * Internal waits registered before the signal is read cannot be ordered after
+ * any public listener, so they settle first without a native listener.
  */
 export class RouterAbortController extends AbortController {
   declare _a?: [reason: unknown]
   declare _o?: true
+  declare _w?: Set<() => void>
   override get signal(): AbortSignal {
     this._o = true
     if (this._a) {
@@ -47,7 +50,11 @@ export class RouterAbortController extends AbortController {
     return super.signal
   }
   override abort(reason?: unknown): void {
-    this._a ||= [reason]
+    if (!this._a) {
+      this._a = [reason]
+      this._w?.forEach((abort) => abort())
+      this._w = undefined
+    }
     if (this._o) {
       super.abort(this._a[0])
     }
@@ -324,21 +331,30 @@ function isControl(
   return typeof result[0 /* location or kind */] === 'number'
 }
 
+/** Rejects with `controller` once it aborts. */
 export function waitFor<T>(
   value: T | PromiseLike<T>,
-  controller: AbortController,
+  controller: RouterAbortController,
 ): Promise<T> {
-  const signal = controller.signal
-  if (signal.aborted) {
-    return Promise.race([Promise.reject(signal), value])
+  if (controller._a) {
+    return Promise.race([Promise.reject(controller), value])
   }
   return new Promise<T>((resolve, reject) => {
-    const abort = () => reject(signal)
-    signal.addEventListener('abort', abort, { once: true })
+    const abort = () => reject(controller)
+    const waits = controller._o ? undefined : (controller._w ||= new Set())
+    if (waits) {
+      waits.add(abort)
+    } else {
+      controller.signal.addEventListener('abort', abort, { once: true })
+    }
     Promise.resolve(value)
       .then(resolve, reject)
       // Both settlement callbacks return normally, so this chain fulfills.
-      .then(() => signal.removeEventListener('abort', abort))
+      .then(() =>
+        waits
+          ? waits.delete(abort)
+          : controller.signal.removeEventListener('abort', abort),
+      )
   })
 }
 
@@ -713,7 +729,7 @@ async function loadResource(
       options,
     )
   } catch (cause) {
-    if (!owner._a || cause !== owner.signal) {
+    if (!owner._a || cause !== owner) {
       throw cause
     }
     releaseFlight(router, match)
@@ -1035,7 +1051,7 @@ async function getNotFoundBoundary(
         await waitFor(loading, controller)
       }
     } catch (cause) {
-      if (controller._a && cause === controller.signal) {
+      if (controller._a && cause === controller) {
         throw cause
       }
     }
@@ -1269,7 +1285,7 @@ async function reduceLane(
         controller,
       )
     } catch (cause) {
-      if (controller._a && cause === controller.signal) {
+      if (controller._a && cause === controller) {
         discardBackground(router, lane)
         return CANCELED_OUTCOME
       }
@@ -1327,7 +1343,7 @@ export async function projectLane(
         match.styles = head?.styles
         match.scripts = scripts
       } catch (cause) {
-        if (controller._a && cause === controller.signal) {
+        if (controller._a && cause === controller) {
           break
         }
         console.error(cause)
@@ -1468,7 +1484,7 @@ async function executeClientLane(
     reduced = await reduction
   } catch (cause) {
     discardBackground(router, matched)
-    if (controller._a && cause === controller.signal) {
+    if (controller._a && cause === controller) {
       return CANCELED_OUTCOME
     }
     throw cause
@@ -2290,7 +2306,7 @@ export async function hydrate(router: AnyRouter): Promise<void> {
       router._preflight = undefined
     }
     controller.abort(cause)
-    if (cause !== controller.signal) {
+    if (cause !== controller) {
       throw cause
     }
   }

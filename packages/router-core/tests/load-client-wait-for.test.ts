@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from 'vitest'
 import { waitForReason } from '../src/await-signal'
-import { waitFor } from '../src/load-client'
+import { RouterAbortController, waitFor } from '../src/load-client'
 import { waitForRequest } from '../src/ssr/server'
 
 test('waitForRequest aliases waitForReason through the server barrel', () => {
@@ -11,7 +11,7 @@ describe('waitFor', () => {
   test.each(['resolve', 'reject'] as const)(
     'removes its abort listener after the value %ss',
     async (outcome) => {
-      const controller = new AbortController()
+      const controller = new RouterAbortController()
       const add = vi.spyOn(controller.signal, 'addEventListener')
       const remove = vi.spyOn(controller.signal, 'removeEventListener')
       const value =
@@ -31,7 +31,7 @@ describe('waitFor', () => {
   )
 
   test('observes a late rejection and cleans up after an active wait is aborted', async () => {
-    const controller = new AbortController()
+    const controller = new RouterAbortController()
     const add = vi.spyOn(controller.signal, 'addEventListener')
     const remove = vi.spyOn(controller.signal, 'removeEventListener')
     let rejectValue!: (error: Error) => void
@@ -39,7 +39,7 @@ describe('waitFor', () => {
       rejectValue = reject
     })
     const result = waitFor(value, controller)
-    const canceled = expect(result).rejects.toBe(controller.signal)
+    const canceled = expect(result).rejects.toBe(controller)
 
     controller.abort()
     await canceled
@@ -54,7 +54,7 @@ describe('waitFor', () => {
   })
 
   test('removes its abort listener when reading a thenable throws', async () => {
-    const controller = new AbortController()
+    const controller = new RouterAbortController()
     const add = vi.spyOn(controller.signal, 'addEventListener')
     const remove = vi.spyOn(controller.signal, 'removeEventListener')
     const error = new Error('then getter failed')
@@ -75,13 +75,13 @@ describe('waitFor', () => {
   })
 
   test('observes a rejected value when the signal is already aborted', async () => {
-    const controller = new AbortController()
+    const controller = new RouterAbortController()
     const error = new Error('late failure')
     controller.abort()
 
-    await expect(waitFor(undefined, controller)).rejects.toBe(controller.signal)
+    await expect(waitFor(undefined, controller)).rejects.toBe(controller)
     await expect(waitFor(Promise.reject(error), controller)).rejects.toBe(
-      controller.signal,
+      controller,
     )
 
     await Promise.resolve()
