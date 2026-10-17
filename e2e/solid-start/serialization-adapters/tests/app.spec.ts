@@ -110,6 +110,12 @@ test.describe('SSR serialization adapters', () => {
   }) => {
     const token = randomUUID()
     const pageErrors: Array<string> = []
+    const duplicateFetches: Array<string> = []
+    page.on('request', (request) => {
+      if (!request.isNavigationRequest() && request.url().includes(token)) {
+        duplicateFetches.push(request.url())
+      }
+    })
     let documentFinished = false
     page.on('pageerror', (error) => pageErrors.push(error.message))
     page.on('requestfinished', (request) => {
@@ -133,6 +139,7 @@ test.describe('SSR serialization adapters', () => {
       await expect(counter).toHaveText('Count: 1')
       const originalCounter = await counter.elementHandle()
       expect(documentFinished).toBe(false)
+      expect(duplicateFetches).toEqual([])
       expect(pageErrors).toEqual([])
       await expect(page.getByTestId('late-container')).toHaveCount(0)
 
@@ -155,6 +162,7 @@ test.describe('SSR serialization adapters', () => {
       await expect(counter).toHaveText('Count: 1')
       await counter.click()
       await expect(counter).toHaveText('Count: 2')
+      expect(duplicateFetches).toEqual([])
       expect(pageErrors).toEqual([])
     } finally {
       // Native navigation aborts any still-open SSR request. The server fixture

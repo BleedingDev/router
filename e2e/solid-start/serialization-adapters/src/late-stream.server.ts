@@ -5,6 +5,11 @@ type Gate = { release: () => void }
 const gates = new Map<string, Gate>()
 
 export async function waitForLateStream(token: string) {
+  if (gates.has(token)) {
+    throw new Error(
+      'Late stream resource must arrive through SSR, not a duplicate fetch',
+    )
+  }
   const signal = getRequest().signal
   let release!: () => void
   let reject!: (reason: unknown) => void
