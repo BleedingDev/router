@@ -68,6 +68,42 @@ test.describe('SSR serialization adapters', () => {
     await checkData(page, 'stream')
   })
 
+  test('stream settles before client JavaScript starts', async ({ page }) => {
+    const pageErrors: Array<string> = []
+    page.on('pageerror', (error) => pageErrors.push(error.message))
+    let releaseClient!: () => void
+    const clientReady = new Promise<void>((resolve) => {
+      releaseClient = resolve
+    })
+    let heldScripts = 0
+    const scriptAssets = '**/assets/*.js'
+    await page.route(scriptAssets, async (route) => {
+      heldScripts++
+      await clientReady
+      await route.continue()
+    })
+
+    try {
+      const response = await page.goto('/ssr/stream', {
+        waitUntil: 'commit',
+      })
+      expect(response).not.toBeNull()
+      // Finish the real deferred SSR response before allowing the app module
+      // to initialize its serialization adapters. No fixture timer changes.
+      await response!.finished()
+      expect(heldScripts).toBeGreaterThan(0)
+      releaseClient()
+      await page.waitForLoadState('load')
+
+      expect(pageErrors).toEqual([])
+      await awaitPageLoaded(page)
+      await checkData(page, 'stream')
+    } finally {
+      releaseClient()
+      await page.unroute(scriptAssets)
+    }
+  })
+
   test('nested', async ({ page }) => {
     await page.goto('/ssr/nested')
     await awaitPageLoaded(page)
