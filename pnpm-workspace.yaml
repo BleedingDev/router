@@ -57,7 +57,7 @@ catalog:
   publint: ^0.3.16
   redaxios: ^0.5.1
   rimraf: ^6.1.2
-  solid-js: 1.9.12
+  solid-js: https://github.com/BleedingDev/solid/releases/download/ultramodern-solid-08a1c106721a/solid-js-1.9.17.tgz
   tinyglobby: ^0.2.17
   vite: ^8.3.4
   vite-plugin-solid: 2.11.10
