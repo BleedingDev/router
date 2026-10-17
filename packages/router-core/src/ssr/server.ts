@@ -31,3 +31,4 @@ export {
 export { defaultSerovalDeserializerPlugins } from './serializer/seroval-plugins'
 export { createRawStreamRPCPlugin } from './serializer/RawStreamRPCPlugin'
 export { makeSsrSerovalPlugin } from './serializer/makeSsrSerovalPlugin'
+export { wrapSsrSerializedScript } from './hydrationScripts'

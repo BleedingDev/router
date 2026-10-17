@@ -1,4 +1,7 @@
-import { makeSsrSerovalPlugin } from '@tanstack/router-core/ssr/server'
+import {
+  makeSsrSerovalPlugin,
+  wrapSsrSerializedScript,
+} from '@tanstack/router-core/ssr/server'
 import type { renderToStream } from 'solid-js/web'
 import type { AnyRouter, AnySerializationAdapter } from '@tanstack/router-core'
 
@@ -20,10 +23,14 @@ function getPlugin(adapter: AnySerializationAdapter) {
 
 /** Solid renderer options shared by the stream and string paths. */
 export function getSolidRenderOptions(router: AnyRouter) {
+  const adapters = router.options.serializationAdapters
   return {
     nonce: router.options.ssr?.nonce,
     // `plugins` is honoured by Solid's server runtime but absent from its
     // public option type.
-    plugins: router.options.serializationAdapters?.map(getPlugin),
+    plugins: adapters?.map(getPlugin),
+    transformSerializedScript: adapters?.length
+      ? wrapSsrSerializedScript
+      : undefined,
   } as Parameters<typeof renderToStream>[1]
 }

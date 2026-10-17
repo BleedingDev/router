@@ -310,6 +310,123 @@ describe('serverSsr.cleanup', () => {
     serverSsr.cleanup()
   })
 
+  test.each(['serialization-first', 'renderer-first'] as const)(
+    'finishes hydration exactly once when both owners settle: %s',
+    async (order) => {
+      const value = deferred<string>()
+      const router = buildRouter({ value: value.promise })
+      attachRouterServerSsrUtils({ router, manifest: undefined })
+      const serverSsr = router.serverSsr!
+      const finish = vi.spyOn(serverSsr.hydrationScripts, 'finish')
+      try {
+        await router.load()
+        await serverSsr.dehydrate()
+        serverSsr.takeInitialHydrationScriptTags()
+        const output = serverSsr.hydrationScripts.claimOutput()
+        serverSsr.hydrationScripts.liftBarrier()
+        if (order === 'renderer-first') serverSsr.setRenderFinished()
+        value.resolve('resolved')
+        await waitFor(() => output.state === HydrationScriptOutputState.Ready)
+        if (order === 'serialization-first') {
+          drainHydrationOutput(output)
+          expect(output.state).toBe(HydrationScriptOutputState.Waiting)
+          expect(finish).not.toHaveBeenCalled()
+          serverSsr.setRenderFinished()
+        }
+        await waitFor(() => finish.mock.calls.length === 1)
+        drainHydrationOutput(output)
+        expect(output.state).toBe(HydrationScriptOutputState.Done)
+        serverSsr.setRenderFinished()
+        await Promise.resolve()
+        expect(finish).toHaveBeenCalledOnce()
+      } finally {
+        serverSsr.cleanup()
+        value.resolve('released')
+      }
+    },
+  )
+
+  test('renderer EOF finishes a settled router without waiting for its completion record', async () => {
+    const router = buildRouter()
+    attachRouterServerSsrUtils({ router, manifest: undefined })
+    await router.load()
+    const serverSsr = router.serverSsr!
+    const finish = vi.spyOn(serverSsr.hydrationScripts, 'finish')
+    await serverSsr.dehydrate()
+    const initial = renderInitialScripts(
+      serverSsr.takeInitialHydrationScriptTags()!,
+    )
+    let renderer!: ReadableStreamDefaultController<string>
+    const source = new ReadableStream<string>({
+      start(controller) {
+        renderer = controller
+        controller.enqueue('<html><body>' + initial + '<main>shell</main>')
+      },
+    })
+    const response = new Response(
+      transformReadableStreamWithRouter(router, source),
+    )
+    const completed = response.text()
+    let closed = false
+    try {
+      await Promise.resolve()
+      expect(finish).not.toHaveBeenCalled()
+      // A renderer-owned delayed resource completes after router Seroval settled.
+      renderer.enqueue('<section>renderer resource</section></body></html>')
+      renderer.close()
+      closed = true
+      const html = await completed
+      expect(html).toContain('<section>renderer resource</section>')
+      expect(html.endsWith('</body></html>')).toBe(true)
+      expect(finish).toHaveBeenCalledOnce()
+      expect(router.serverSsr).toBeUndefined()
+    } finally {
+      if (!closed) renderer.close()
+      await completed.catch(() => {})
+      serverSsr.cleanup()
+    }
+  })
+
+  test.each(['cancel', 'error'] as const)(
+    'does not finish successful hydration after renderer %s',
+    async (kind) => {
+      const router = buildRouter()
+      attachRouterServerSsrUtils({ router, manifest: undefined })
+      await router.load()
+      const serverSsr = router.serverSsr!
+      const finish = vi.spyOn(serverSsr.hydrationScripts, 'finish')
+      await serverSsr.dehydrate()
+      const initial = renderInitialScripts(
+        serverSsr.takeInitialHydrationScriptTags()!,
+      )
+      let renderer!: ReadableStreamDefaultController<string>
+      const source = new ReadableStream<string>({
+        start(controller) {
+          renderer = controller
+          controller.enqueue('<html><body>' + initial)
+        },
+      })
+      const response = transformReadableStreamWithRouter(router, source)
+      const reason = new Error('renderer ' + kind)
+      try {
+        if (kind === 'cancel') {
+          await response.cancel(reason)
+        } else {
+          const body = new Response(response).text()
+          renderer.error(reason)
+          await expect(body).rejects.toBe(reason)
+        }
+        expect(finish).not.toHaveBeenCalled()
+        expect(router.serverSsr).toBeUndefined()
+        // A stale lifecycle notification cannot revive a cleaned request.
+        serverSsr.setRenderFinished()
+        expect(finish).not.toHaveBeenCalled()
+      } finally {
+        serverSsr.cleanup()
+      }
+    },
+  )
+
   test('serialization completion does not clear render-finished listeners', async () => {
     const value = deferred<string>()
     const router = buildRouter({ value: value.promise })
@@ -330,11 +447,13 @@ describe('serverSsr.cleanup', () => {
     value.resolve('done')
     await waitFor(() => output.state === HydrationScriptOutputState.Ready)
     drainHydrationOutput(output)
-    expect(output.state).toBe(HydrationScriptOutputState.Done)
+    expect(output.state).toBe(HydrationScriptOutputState.Waiting)
 
     expect(renderFinishedCalls).toBe(0)
     router.serverSsr!.setRenderFinished()
     expect(renderFinishedCalls).toBe(1)
+    drainHydrationOutput(output)
+    expect(output.state).toBe(HydrationScriptOutputState.Done)
 
     router.serverSsr?.cleanup()
   })
@@ -413,7 +532,7 @@ describe('serverSsr.cleanup', () => {
     serverSsr.cleanup()
   })
 
-  test('a late output claim exposes completed serialization', async () => {
+  test('a late output claim waits for the renderer after serialization completes', async () => {
     const router = buildRouter()
     attachRouterServerSsrUtils({ router, manifest: undefined })
 
@@ -427,13 +546,17 @@ describe('serverSsr.cleanup', () => {
       calls++
     })
 
-    expect(output.state).toBe(HydrationScriptOutputState.Done)
+    expect(output.state).toBe(HydrationScriptOutputState.Waiting)
     expect(calls).toBe(0)
+    router.serverSsr!.setRenderFinished()
+    expect(calls).toBe(1)
+    drainHydrationOutput(output)
+    expect(output.state).toBe(HydrationScriptOutputState.Done)
     expect(() => unsubscribe()).not.toThrow()
     router.serverSsr?.cleanup()
   })
 
-  test('stream pass-through only reserves when no SSR work is pending', async () => {
+  test('stream pass-through waits for the renderer completion record', async () => {
     const router = buildRouter()
     attachRouterServerSsrUtils({ router, manifest: undefined })
 
@@ -445,7 +568,7 @@ describe('serverSsr.cleanup', () => {
     )
     expect(initialScripts?.boundary.attrs).not.toHaveProperty('id')
 
-    expect(router.serverSsr!.hydrationScripts.reserveFastPath()).toBe(true)
+    expect(router.serverSsr!.hydrationScripts.reserveFastPath()).toBe(false)
     let renderFinishedCalls = 0
     router.serverSsr!.onRenderFinished(() => {
       renderFinishedCalls++
@@ -453,6 +576,11 @@ describe('serverSsr.cleanup', () => {
     router.serverSsr!.setRenderFinished()
     expect(renderFinishedCalls).toBe(1)
     expect(router.serverSsr!.hydrationScripts.reserveFastPath()).toBe(false)
+    const output = router.serverSsr!.hydrationScripts.claimOutput()
+    drainHydrationOutput(output)
+    expect(router.serverSsr!.hydrationScripts.reserveFastPath(output)).toBe(
+      true,
+    )
 
     router.serverSsr?.cleanup()
   })
@@ -788,7 +916,10 @@ describe('serverSsr.cleanup', () => {
     expect(output.state).toBe(HydrationScriptOutputState.Ready)
     const hydration = drainHydrationOutput(output)
     expect(hydration).toContain('buffered')
-    expect(hydration).toContain('$_TSR.e()')
+    expect(output.state).toBe(HydrationScriptOutputState.Waiting)
+    router.serverSsr!.setRenderFinished()
+    drainHydrationOutput(output)
+    expect(output.state).toBe(HydrationScriptOutputState.Done)
     router.serverSsr!.cleanup()
   })
 

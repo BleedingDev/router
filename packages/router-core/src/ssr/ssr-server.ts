@@ -405,6 +405,14 @@ export function attachRouterServerSsrUtils({
   let disposeSerialization: (() => void) | undefined
   const hydrationScripts = createHydrationScripts(router.options.ssr?.nonce)
 
+  function finishHydrationIfReady() {
+    // Renderers can serialize resources after the router's own data settles.
+    // Keep client adapters alive until no renderer statement can still arrive.
+    if (settled && renderFinished && !cleanupStarted) {
+      hydrationScripts.finish()
+    }
+  }
+
   const serverSsr: ServerSsr = {
     hydrationScripts,
     dehydrate: async (opts?: {
@@ -495,7 +503,7 @@ export function attachRouterServerSsrUtils({
         disposeSerialization = undefined
         if (result === true) {
           settled = true
-          hydrationScripts.finish()
+          finishHydrationIfReady()
         } else if (result) {
           hydrationScripts.fail(result.error)
         }
@@ -591,6 +599,7 @@ export function attachRouterServerSsrUtils({
         'Error in render finished listener:',
         undefined,
       )
+      finishHydrationIfReady()
     },
     disableHydration: () => {
       if (cleanupStarted || dehydrationPhase === 'disabled') {
