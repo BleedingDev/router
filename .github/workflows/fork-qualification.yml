@@ -43,6 +43,8 @@ jobs:
         uses: TanStack/config/.github/setup@e4b48f16568324f76f467aa4c2aac2f05db632c3 # main
       - name: Check formatting
         run: pnpm exec prettier --experimental-cli --ignore-unknown '**/*' --check
+      - name: Check exact archive promotion guards
+        run: node --test scripts/ultramodern-core-release.test.mjs
       - name: Resolve the full Nx project graph
         run: pnpm nx graph --file="$RUNNER_TEMP/router-project-graph.json"
       - name: Partition every project exactly once
