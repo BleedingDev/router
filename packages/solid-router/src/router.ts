@@ -1,4 +1,5 @@
 import { RouterCore } from '@tanstack/router-core'
+import { isServer } from '@tanstack/router-core/isServer'
 import { getStoreFactory } from './routerStores'
 import type { RouterHistory } from '@tanstack/history'
 import type {
@@ -100,5 +101,18 @@ export class Router<
     >,
   ) {
     super(options, getStoreFactory)
+    if (isServer ?? this.isServer) {
+      this.serverSsrLifecycle = {
+        ...this.serverSsrLifecycle,
+        onServerSsrAttach: [
+          ...(this.serverSsrLifecycle?.onServerSsrAttach ?? []),
+          (serverSsr) => {
+            if (this.options.serializationAdapters?.length) {
+              serverSsr.retainHydrationUntilRenderFinished()
+            }
+          },
+        ],
+      }
+    }
   }
 }

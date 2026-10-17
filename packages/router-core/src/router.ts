@@ -851,6 +851,10 @@ export interface ServerSsr {
   onRenderFinished: (listener: () => void) => void
   /** Framework-only. */
   setRenderFinished: () => void
+  /** Framework-only: retain adapter state for renderer-owned resource scripts.
+   * Call before dehydrate; renderers without such scripts keep their fast paths.
+   */
+  retainHydrationUntilRenderFinished: () => void
   /** Framework-only. */
   cleanup: () => void
   /**

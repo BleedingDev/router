@@ -1,4 +1,4 @@
-self.$_TSR ||= {
+self.$_TSR = self.$_TSR || {
   h() {
     this.hydrated = true
     this.c()

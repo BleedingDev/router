@@ -396,6 +396,7 @@ export function attachRouterServerSsrUtils({
   }
   let dehydrationPhase: DehydrationPhase = 'idle'
   let renderFinished = false
+  let retainUntilRenderFinished = false
   const renderFinishedListeners: Array<() => void> = []
   const cleanupListeners: Array<(settled: boolean) => void> = []
   let cleanupStarted = false
@@ -408,12 +409,24 @@ export function attachRouterServerSsrUtils({
   function finishHydrationIfReady() {
     // Renderers can serialize resources after the router's own data settles.
     // Keep client adapters alive until no renderer statement can still arrive.
-    if (settled && renderFinished && !cleanupStarted) {
+    if (
+      settled &&
+      (!retainUntilRenderFinished || renderFinished) &&
+      !cleanupStarted
+    ) {
       hydrationScripts.finish()
     }
   }
 
   const serverSsr: ServerSsr = {
+    retainHydrationUntilRenderFinished: () => {
+      if (dehydrationPhase !== 'idle') {
+        throw new Error(
+          'Invariant failed: retain renderer hydration before dehydrate()',
+        )
+      }
+      retainUntilRenderFinished = true
+    },
     hydrationScripts,
     dehydrate: async (opts?: {
       requestAssets?: ManifestRouteAssets

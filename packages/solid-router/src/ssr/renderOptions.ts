@@ -1,6 +1,6 @@
 import {
+  createSsrSerializedScriptTransformer,
   makeSsrSerovalPlugin,
-  wrapSsrSerializedScript,
 } from '@tanstack/router-core/ssr/server'
 import type { renderToStream } from 'solid-js/web'
 import type { AnyRouter, AnySerializationAdapter } from '@tanstack/router-core'
@@ -30,7 +30,7 @@ export function getSolidRenderOptions(router: AnyRouter) {
     // public option type.
     plugins: adapters?.map(getPlugin),
     transformSerializedScript: adapters?.length
-      ? wrapSsrSerializedScript
+      ? createSsrSerializedScriptTransformer()
       : undefined,
   } as Parameters<typeof renderToStream>[1]
 }

@@ -42,11 +42,16 @@ const DEFAULT_INITIAL_SOURCES = [
   minifiedTsrBootStrapScript,
 ]
 
-/** Queue one renderer serialization statement until client adapters exist. */
-export function wrapSsrSerializedScript(source: string): string {
-  // A renderer can serialize a synchronous resource before <Scripts>. Reuse
-  // the same bootstrap without resetting callbacks or the router's refs.
-  return minifiedTsrBootStrapScript + ';' + PROMISE_PREFIX + '{' + source + '\n})'
+/** Queue a request's renderer statements until client adapters exist. */
+export function createSsrSerializedScriptTransformer() {
+  let first = true
+  return (source: string): string => {
+    // A renderer can serialize a synchronous resource before <Scripts>. Reuse
+    // the bootstrap once without resetting callbacks or the router's refs.
+    const prefix = first ? minifiedTsrBootStrapScript + ';' : ''
+    first = false
+    return prefix + PROMISE_PREFIX + '{' + source + '\n})'
+  }
 }
 
 export const HydrationScriptOutputState = {
