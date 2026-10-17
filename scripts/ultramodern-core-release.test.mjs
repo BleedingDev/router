@@ -243,6 +243,14 @@ function promotion(context) {
   const state = {
     release: undefined,
     assets: new Map(),
+    assetMetadata: new Map(),
+    jobs: jobs.map((job) => ({ ...job })),
+    deletes: 0,
+    nextAssetId: 1,
+    immutableOnPublish: true,
+    tagShaOnPublish: sha,
+    corruptOnPublish: false,
+    failAssetDownload: false,
     uploads: 0,
     creates: 0,
     edits: 0,
@@ -274,14 +282,31 @@ function promotion(context) {
     },
     gh: (...args) => {
       if (args[0] === 'api') {
+        if (args[1] === '--method') {
+          assert.equal(args[2], 'DELETE')
+          assert.equal(
+            state.release.draft,
+            true,
+            'Never mutate published assets',
+          )
+          const id = Number(args[3].split('/').at(-1))
+          const entry = [...state.assetMetadata].find(
+            ([, asset]) => asset.id === id,
+          )
+          assert(entry, 'Delete only the identified draft asset')
+          state.assets.delete(entry[0])
+          state.assetMetadata.delete(entry[0])
+          state.deletes++
+          return ''
+        }
         if (args[1].endsWith('/runs/123')) {
           return JSON.stringify(run)
         }
         if (args[1].includes('/jobs?')) {
           assert(args.includes('--paginate') && args.includes('--slurp'))
           return JSON.stringify([
-            { jobs: jobs.slice(0, 5) },
-            { jobs: jobs.slice(5) },
+            { jobs: state.jobs.slice(0, 5) },
+            { jobs: state.jobs.slice(5) },
           ])
         }
         if (args[1].includes('/matching-refs/')) {
@@ -308,13 +333,16 @@ function promotion(context) {
         assert.equal(args[1], 'repos/BleedingDev/router/releases/501')
         return JSON.stringify({
           ...state.release,
-          assets: [...state.assets.keys()].map((name) => ({ name })),
+          assets: [...state.assets.keys()].map((name) => ({
+            name,
+            ...state.assetMetadata.get(name),
+          })),
         })
       }
       if (args[0] === 'run') {
         assert.equal(
           args[args.indexOf('--name') + 1],
-          'router-core-cohort-123-1',
+          `router-core-cohort-123-${f.cohort.runAttempt}`,
         )
         if (state.failDownload) {
           throw new Error('Download interrupted')
@@ -330,15 +358,26 @@ function promotion(context) {
         state.release = { tag_name: tag, target_commitish: sha, draft: true }
         state.creates++
       } else if (command === 'upload') {
-        if (state.failAfterOneUpload && state.uploads === 1) {
-          throw new Error('Upload interrupted')
-        }
         const file = args[3]
         const name = path.basename(file)
         assert(!state.assets.has(name), 'Never overwrite an existing asset')
-        state.assets.set(name, readFileSync(file))
+        const interrupted = state.failAfterOneUpload && state.uploads === 1
+        state.assets.set(
+          name,
+          interrupted ? Buffer.alloc(0) : readFileSync(file),
+        )
+        state.assetMetadata.set(name, {
+          id: state.nextAssetId++,
+          state: interrupted ? 'starter' : 'uploaded',
+        })
+        if (interrupted) {
+          throw new Error('Upload interrupted')
+        }
         state.uploads++
       } else if (command === 'download') {
+        if (state.failAssetDownload) {
+          throw new Error('Asset transport failure')
+        }
         const name = args[args.indexOf('--pattern') + 1]
         writeFileSync(
           path.join(args[args.indexOf('--dir') + 1], name),
@@ -347,7 +386,14 @@ function promotion(context) {
       } else if (command === 'edit') {
         state.edits++
         state.release.draft = false
-        state.tagSha = sha
+        state.tagSha = state.tagShaOnPublish
+        state.release.immutable = state.immutableOnPublish
+        if (state.corruptOnPublish) {
+          state.assets.set(
+            'cohort.json',
+            Buffer.from('corrupted on publication'),
+          )
+        }
       } else {
         assert.fail(`Unexpected command: ${args}`)
       }
@@ -359,43 +405,114 @@ function promotion(context) {
   return { ...f, state, commands, clean }
 }
 
-test('resumes an interrupted draft with exact bytes, then leaves finalized release untouched', (context) => {
+test('replaces an interrupted starter asset, then leaves finalized bytes untouched', (context) => {
   const f = promotion(context)
   f.state.failAfterOneUpload = true
   assert.throws(
     () => publishCoreRelease('123', f.commands),
     /Upload interrupted/,
   )
-  assert.equal(f.state.assets.size, 1)
+  assert.equal(f.state.assets.size, 2)
+  assert.equal(
+    f.state.assetMetadata.get(f.cohort.package.archive).state,
+    'starter',
+  )
   assert.equal(f.state.release.draft, true)
   f.clean()
-  const retained = f.state.assets.get('cohort.json')
-  f.state.assets.set('cohort.json', Buffer.from('different draft bytes'))
-  assert.throws(
-    () => publishCoreRelease('123', f.commands),
-    /Never replace release bytes/,
-  )
-  f.clean()
-  f.state.assets.set('cohort.json', retained)
   f.state.failAfterOneUpload = false
   const url = publishCoreRelease('123', f.commands)
   assert.equal(
     url,
     `https://github.com/BleedingDev/router/releases/tag/ultramodern-router-core-${sha.slice(0, 12)}`,
   )
+  assert.equal(f.state.deletes, 1)
   assert.equal(f.state.release.draft, false)
-  assert.equal(f.state.assets.size, 2)
+  assert.equal(f.state.release.immutable, true)
   f.clean()
   publishCoreRelease('123', f.commands)
   assert.equal(f.state.creates, 1)
   assert.equal(f.state.uploads, 2)
   assert.equal(f.state.edits, 1)
-  f.clean()
+  assert.equal(f.state.deletes, 1)
   f.state.assets.set('cohort.json', Buffer.from('different remote bytes'))
   assert.throws(
     () => publishCoreRelease('123', f.commands),
     /Never replace release bytes/,
   )
+  assert.equal(f.state.deletes, 1)
+  f.clean()
+})
+
+test('a newer accepted attempt replaces only differing draft bytes and interrupted uploads', (context) => {
+  const f = promotion(context)
+  f.state.failAfterOneUpload = true
+  assert.throws(
+    () => publishCoreRelease('123', f.commands),
+    /Upload interrupted/,
+  )
+  f.cohort.runAttempt = '2'
+  f.save()
+  f.state.jobs.at(-1).run_attempt = 2
+  f.state.failAfterOneUpload = false
+  publishCoreRelease('123', f.commands)
+  assert.equal(f.state.deletes, 2)
+  assert.equal(f.state.uploads, 3)
+  assert.deepEqual(
+    f.state.assets.get('cohort.json'),
+    readFileSync(path.join(f.accepted, 'cohort.json')),
+  )
+  assert.deepEqual(
+    f.state.assets.get(f.cohort.package.archive),
+    readFileSync(path.join(f.accepted, f.cohort.package.archive)),
+  )
+  f.clean()
+})
+
+test('uploaded draft transport failures do not delete or replace assets', (context) => {
+  const f = promotion(context)
+  f.state.failAfterOneUpload = true
+  assert.throws(
+    () => publishCoreRelease('123', f.commands),
+    /Upload interrupted/,
+  )
+  f.state.failAfterOneUpload = false
+  f.state.failAssetDownload = true
+  assert.throws(
+    () => publishCoreRelease('123', f.commands),
+    /Asset transport failure/,
+  )
+  assert.equal(f.state.deletes, 0)
+  assert.equal(f.state.uploads, 1)
+  assert.equal(f.state.edits, 0)
+  f.clean()
+})
+
+test('publication readback rejects a moved tag, mutable release or differing bytes', (context) => {
+  for (const [field, value, message] of [
+    ['tagShaOnPublish', 'b'.repeat(40), /Release tag differs/],
+    ['immutableOnPublish', false, /must be immutable/],
+    ['corruptOnPublish', true, /Never replace release bytes/],
+  ]) {
+    const f = promotion(context)
+    f.state[field] = value
+    assert.throws(() => publishCoreRelease('123', f.commands), message)
+    assert.equal(f.state.edits, 1)
+    assert.equal(f.state.deletes, 0)
+    f.clean()
+  }
+})
+
+test('published fast return also requires immutable status without mutation', (context) => {
+  const f = promotion(context)
+  publishCoreRelease('123', f.commands)
+  f.state.release.immutable = false
+  assert.throws(
+    () => publishCoreRelease('123', f.commands),
+    /must be immutable/,
+  )
+  assert.equal(f.state.edits, 1)
+  assert.equal(f.state.uploads, 2)
+  assert.equal(f.state.deletes, 0)
   f.clean()
 })
 

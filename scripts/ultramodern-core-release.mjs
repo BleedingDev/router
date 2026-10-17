@@ -172,33 +172,39 @@ export function publishCoreRelease(runId, commands = {}) {
       source,
     )
     const tag = `ultramodern-router-core-${sha.slice(0, 12)}`
-    const refs = api(
-      `repos/${repository}/git/matching-refs/tags/${tag}`,
-    ).filter((ref) => ref.ref === `refs/tags/${tag}`)
-    assert(refs.length <= 1)
-    for (const ref of refs) {
-      assert.equal(
-        ref.object.type,
-        'commit',
-        'Release tag must directly identify the accepted commit',
-      )
-      assert.equal(
-        ref.object.sha,
-        sha,
-        'Release tag differs from accepted source',
-      )
+    const readTag = () => {
+      const refs = api(
+        `repos/${repository}/git/matching-refs/tags/${tag}`,
+      ).filter((ref) => ref.ref === `refs/tags/${tag}`)
+      assert(refs.length <= 1)
+      for (const ref of refs) {
+        assert.equal(
+          ref.object.type,
+          'commit',
+          'Release tag must directly identify the accepted commit',
+        )
+        assert.equal(
+          ref.object.sha,
+          sha,
+          'Release tag differs from accepted source',
+        )
+      }
+      return refs
     }
-    // Resolve drafts too; REST's release-by-tag endpoint only sees published releases.
-    const id = api(
-      'graphql',
-      '-f',
-      'query=query($tag: String!) { repository(owner: "BleedingDev", name: "router") { release(tagName: $tag) { databaseId } } }',
-      '-f',
-      `tag=${tag}`,
-    ).data.repository.release?.databaseId
-    const release =
-      id === undefined ? undefined : api(`repos/${repository}/releases/${id}`)
-    if (release) {
+    const readRelease = () => {
+      // GraphQL resolves drafts as well as published releases.
+      const id = api(
+        'graphql',
+        '-f',
+        'query=query($tag: String!) { repository(owner: "BleedingDev", name: "router") { release(tagName: $tag) { databaseId } } }',
+        '-f',
+        `tag=${tag}`,
+      ).data.repository.release?.databaseId
+      return id === undefined
+        ? undefined
+        : api(`repos/${repository}/releases/${id}`)
+    }
+    const validateAssets = (release) => {
       assert.equal(release.tag_name, tag)
       assert.equal(release.target_commitish, sha)
       assert.equal(
@@ -209,38 +215,88 @@ export function publishCoreRelease(runId, commands = {}) {
         release.assets.every((asset) => files.includes(asset.name)),
         'Unexpected release asset',
       )
-      if (!release.draft) {
-        assert.equal(
-          refs.length,
-          1,
-          'Published release requires its exact source tag',
-        )
-        assert.equal(
-          release.assets.length,
-          files.length,
-          'Published release is incomplete',
-        )
-      }
+    }
+    const download = (asset) => {
+      const downloadDirectory = mkdtempSync(path.join(directory, 'asset-'))
+      gh(
+        'release',
+        'download',
+        tag,
+        '--repo',
+        repository,
+        '--pattern',
+        asset.name,
+        '--dir',
+        downloadDirectory,
+      )
+      return readFileSync(path.join(downloadDirectory, asset.name))
+    }
+    const acceptedBytes = (name) => readFileSync(path.join(accepted, name))
+    const verifyPublished = (release) => {
+      assert(release, 'Published release is missing')
+      validateAssets(release)
+      assert.equal(release.draft, false, 'Release must be published')
+      assert.equal(
+        release.immutable,
+        true,
+        'Published release must be immutable',
+      )
+      assert.equal(
+        readTag().length,
+        1,
+        'Published release requires its exact source tag',
+      )
+      assert.equal(
+        release.assets.length,
+        files.length,
+        'Published release is incomplete',
+      )
       for (const asset of release.assets) {
-        gh(
-          'release',
-          'download',
-          tag,
-          '--repo',
-          repository,
-          '--pattern',
-          asset.name,
-          '--dir',
-          directory,
+        assert.equal(
+          asset.state,
+          'uploaded',
+          'Published asset must be fully uploaded',
         )
         assert.deepEqual(
-          readFileSync(path.join(directory, asset.name)),
-          readFileSync(path.join(accepted, asset.name)),
+          download(asset),
+          acceptedBytes(asset.name),
           'Never replace release bytes',
         )
       }
+    }
+    readTag()
+    const release = readRelease()
+    const retained = new Set()
+    if (release) {
+      validateAssets(release)
       if (!release.draft) {
+        verifyPublished(release)
         return `https://github.com/${repository}/releases/tag/${tag}`
+      }
+      for (const asset of release.assets) {
+        assert(
+          ['starter', 'uploaded'].includes(asset.state),
+          'Unknown draft asset state',
+        )
+        // A failed upload can leave a starter asset. Uploaded assets must be
+        // downloaded successfully before deciding whether their bytes differ.
+        if (
+          asset.state === 'uploaded' &&
+          download(asset).equals(acceptedBytes(asset.name))
+        ) {
+          retained.add(asset.name)
+        } else {
+          assert(
+            Number.isSafeInteger(asset.id) && asset.id > 0,
+            'Draft asset requires its GitHub ID',
+          )
+          gh(
+            'api',
+            '--method',
+            'DELETE',
+            `repos/${repository}/releases/assets/${asset.id}`,
+          )
+        }
       }
     } else {
       gh(
@@ -259,7 +315,7 @@ export function publishCoreRelease(runId, commands = {}) {
       )
     }
     for (const file of files) {
-      if (!release?.assets.some((asset) => asset.name === file)) {
+      if (!retained.has(file)) {
         gh(
           'release',
           'upload',
@@ -279,6 +335,7 @@ export function publishCoreRelease(runId, commands = {}) {
       '--draft=false',
       '--latest=false',
     )
+    verifyPublished(readRelease())
     return `https://github.com/${repository}/releases/tag/${tag}`
   } finally {
     rmSync(directory, { recursive: true, force: true })
