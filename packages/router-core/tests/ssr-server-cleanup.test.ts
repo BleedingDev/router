@@ -63,6 +63,20 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
+function hasHydrationFinish(
+  scripts: object,
+): scripts is Pick<HydrationScripts, 'finish'> {
+  return 'finish' in scripts && typeof scripts.finish === 'function'
+}
+
+function spyOnHydrationFinish(scripts: object) {
+  // The producer method is intentionally absent from the public transport API.
+  if (!hasHydrationFinish(scripts)) {
+    throw new Error('Expected the internal hydration producer finish method')
+  }
+  return vi.spyOn(scripts, 'finish')
+}
+
 afterEach(() => {
   vi.restoreAllMocks()
 })
@@ -317,7 +331,7 @@ describe('serverSsr.cleanup', () => {
       const router = buildRouter({ value: value.promise })
       attachRouterServerSsrUtils({ router, manifest: undefined })
       const serverSsr = router.serverSsr!
-      const finish = vi.spyOn(serverSsr.hydrationScripts, 'finish')
+      const finish = spyOnHydrationFinish(serverSsr.hydrationScripts)
       serverSsr.retainHydrationUntilRenderFinished()
       try {
         await router.load()
@@ -352,7 +366,7 @@ describe('serverSsr.cleanup', () => {
     attachRouterServerSsrUtils({ router, manifest: undefined })
     await router.load()
     const serverSsr = router.serverSsr!
-    const finish = vi.spyOn(serverSsr.hydrationScripts, 'finish')
+    const finish = spyOnHydrationFinish(serverSsr.hydrationScripts)
     serverSsr.retainHydrationUntilRenderFinished()
     await serverSsr.dehydrate()
     const initial = renderInitialScripts(
@@ -396,7 +410,7 @@ describe('serverSsr.cleanup', () => {
       attachRouterServerSsrUtils({ router, manifest: undefined })
       await router.load()
       const serverSsr = router.serverSsr!
-      const finish = vi.spyOn(serverSsr.hydrationScripts, 'finish')
+      const finish = spyOnHydrationFinish(serverSsr.hydrationScripts)
       serverSsr.retainHydrationUntilRenderFinished()
       await serverSsr.dehydrate()
       const initial = renderInitialScripts(
@@ -434,7 +448,7 @@ describe('serverSsr.cleanup', () => {
     const router = buildRouter()
     attachRouterServerSsrUtils({ router, manifest: undefined })
     const serverSsr = router.serverSsr!
-    const finish = vi.spyOn(serverSsr.hydrationScripts, 'finish')
+    const finish = spyOnHydrationFinish(serverSsr.hydrationScripts)
     try {
       await router.load()
       const dehydration = serverSsr.dehydrate()
