@@ -16,6 +16,7 @@ permissions:
 
 jobs:
   test:
+    if: github.repository == 'TanStack/router'
     name: Test
     runs-on: ubuntu-latest
     env:
@@ -40,6 +41,7 @@ jobs:
         if: ${{ always() }}
         run: npx nx-cloud stop-all-agents
   preview:
+    if: github.repository == 'TanStack/router'
     name: Preview
     runs-on: ubuntu-latest
     permissions:
@@ -58,6 +60,7 @@ jobs:
       - name: Publish Previews
         run: pnpx pkg-pr-new publish --pnpm './packages/*' --template './examples/*/*'
   version-preview:
+    if: github.repository == 'TanStack/router'
     name: Version Preview
     runs-on: ubuntu-latest
     permissions:

@@ -1,0 +1,116 @@
+name: Fork Qualification
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CI: 'true'
+  NX_NO_CLOUD: 'true'
+  NX_DAEMON: 'false'
+  SERVER_PRESET: node-server
+  TSR_TMP_DIR: ./tmp
+
+jobs:
+  qualification:
+    name: Full fork qualification and accepted router-core archive
+    if: github.repository == 'BleedingDev/router'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Setup Tools
+        uses: TanStack/config/.github/setup@e4b48f16568324f76f467aa4c2aac2f05db632c3 # main
+      - name: Install browser dependencies
+        run: pnpm exec playwright install --with-deps
+      - name: Run the full existing qualification targets
+        run: pnpm run test:ci --parallel=1 --outputStyle=stream --skipRemoteCache
+      - name: Pack the accepted router-core build
+        env:
+          CORE_ARTIFACT_DIR: ${{ runner.temp }}/router-core-cohort
+        run: |
+          mkdir -p "$CORE_ARTIFACT_DIR"
+          pnpm --filter @tanstack/router-core pack --pack-destination "$CORE_ARTIFACT_DIR"
+      - name: Verify archive identity and record provenance
+        env:
+          CORE_ARTIFACT_DIR: ${{ runner.temp }}/router-core-cohort
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict'
+          import { createHash } from 'node:crypto'
+          import { execFileSync } from 'node:child_process'
+          import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
+          import { join } from 'node:path'
+
+          const sourceSha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
+          assert.equal(sourceSha, process.env.GITHUB_SHA)
+          assert.equal(process.env.GITHUB_REPOSITORY, 'BleedingDev/router')
+          const directory = process.env.CORE_ARTIFACT_DIR
+          const archives = readdirSync(directory)
+          assert.equal(archives.length, 1)
+          const archive = archives[0]
+          assert.match(archive, /^tanstack-router-core-[0-9][A-Za-z0-9.+-]*\.tgz$/)
+          const archivePath = join(directory, archive)
+          const packed = JSON.parse(execFileSync('tar', ['-xOf', archivePath, 'package/package.json'], { encoding: 'utf8' }))
+          const source = JSON.parse(readFileSync('packages/router-core/package.json', 'utf8'))
+          assert.equal(packed.name, '@tanstack/router-core')
+          assert.equal(packed.version, source.version)
+          for (const requests of [packed.dependencies, packed.optionalDependencies, packed.peerDependencies]) {
+            for (const request of Object.values(requests ?? {})) {
+              assert.ok(!request.startsWith('workspace:'), 'Packed dependency must resolve outside the workspace')
+            }
+          }
+          const entries = new Set(execFileSync('tar', ['-tzf', archivePath], { encoding: 'utf8' }).trim().split('\n'))
+          function verifyExports(value) {
+            if (typeof value === 'string') {
+              assert.ok(value.startsWith('./'), 'Export must be package-local')
+              assert.ok(entries.has('package/' + value.slice(2)), 'Missing packed export: ' + value)
+            } else if (value !== null && typeof value === 'object') {
+              for (const target of Object.values(value)) {
+                verifyExports(target)
+              }
+            }
+          }
+          verifyExports(packed.exports)
+          const manifest = {
+            schemaVersion: 1,
+            repository: process.env.GITHUB_REPOSITORY,
+            sourceSha,
+            workflow: '.github/workflows/fork-qualification.yml',
+            runId: process.env.GITHUB_RUN_ID,
+            runAttempt: process.env.GITHUB_RUN_ATTEMPT,
+            event: process.env.GITHUB_EVENT_NAME,
+            ref: process.env.GITHUB_REF,
+            node: process.version,
+            pnpm: execFileSync('pnpm', ['--version'], { encoding: 'utf8' }).trim(),
+            package: {
+              name: packed.name,
+              version: packed.version,
+              archive,
+              integrity: 'sha512-' + createHash('sha512').update(readFileSync(archivePath)).digest('base64'),
+              dependencies: packed.dependencies ?? {},
+            },
+          }
+          writeFileSync(join(directory, 'cohort.json'), JSON.stringify(manifest, null, 2) + '\n')
+          NODE
+      - name: Retain exact accepted archive and manifest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: router-core-cohort-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/router-core-cohort
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
