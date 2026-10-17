@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
 import { test } from '@tanstack/router-e2e-utils'
 import type { Page } from '@playwright/test'
@@ -101,6 +102,64 @@ test.describe('SSR serialization adapters', () => {
     } finally {
       releaseClient()
       await page.unroute(scriptAssets)
+    }
+  })
+
+  test('custom renderer resource arrives after client hydration while the document is open', async ({
+    page,
+  }) => {
+    const token = randomUUID()
+    const pageErrors: Array<string> = []
+    let documentFinished = false
+    page.on('pageerror', (error) => pageErrors.push(error.message))
+    page.on('requestfinished', (request) => {
+      if (
+        request.isNavigationRequest() &&
+        request.frame() === page.mainFrame() &&
+        request.url().includes(token)
+      ) {
+        documentFinished = true
+      }
+    })
+
+    try {
+      const response = await page.goto(`/ssr/stream?late=${token}`, {
+        waitUntil: 'commit',
+      })
+      expect(response).not.toBeNull()
+      const counter = page.getByTestId('late-counter')
+      await expect(page.getByTestId('late-pending')).toBeVisible()
+      await counter.click()
+      await expect(counter).toHaveText('Count: 1')
+      const originalCounter = await counter.elementHandle()
+      expect(documentFinished).toBe(false)
+      expect(pageErrors).toEqual([])
+      await expect(page.getByTestId('late-container')).toHaveCount(0)
+
+      await page.getByTestId('late-release').click()
+      await checkData(page, 'late')
+      await page.getByTestId('late-check-adapters').click()
+      await expect(page.getByTestId('late-decoded')).toHaveText(
+        'true:Honk! Honk!',
+      )
+      await expect(page.getByTestId('late-pending')).toHaveCount(0)
+      await response!.finished()
+      expect(documentFinished).toBe(true)
+      await awaitPageLoaded(page)
+      expect(
+        await counter.evaluate(
+          (node, original) => node === original,
+          originalCounter,
+        ),
+      ).toBe(true)
+      await expect(counter).toHaveText('Count: 1')
+      await counter.click()
+      await expect(counter).toHaveText('Count: 2')
+      expect(pageErrors).toEqual([])
+    } finally {
+      // Native navigation aborts any still-open SSR request. The server fixture
+      // also removes its gate on request abort or its bounded failure deadline.
+      await page.goto('/', { waitUntil: 'commit' })
     }
   })
 
