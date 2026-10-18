@@ -40,9 +40,13 @@ export type TransformStreamWithRouterOptions = {
 }
 
 type AppStreamValue = Uint8Array | string
-/** The default-reader contract shared by Web and Node Web streams. */
+type AppStreamReader = Pick<
+  ReadableStreamDefaultReader<AppStreamValue>,
+  'read' | 'cancel' | 'releaseLock'
+>
+/** The default-reader operations shared by Web and Node Web streams. */
 type AppStream = {
-  getReader(): ReadableStreamDefaultReader<AppStreamValue>
+  getReader: () => AppStreamReader
 }
 
 export async function transformHtmlStringWithRouter(
@@ -115,7 +119,6 @@ const ApplicationPhase = {
 
 type ApplicationPhase = (typeof ApplicationPhase)[keyof typeof ApplicationPhase]
 type Termination = 'complete' | 'cancel' | 'failure'
-type AppStreamReader = ReadableStreamDefaultReader<AppStreamValue>
 
 function releaseReader(reader: AppStreamReader) {
   try {

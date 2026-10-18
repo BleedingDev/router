@@ -1332,6 +1332,104 @@ describe('createStartHandler early hints', () => {
     expect(response.headers.get('Link')).not.toContain('/initial.png')
   })
 
+  it.each(['render', 'redirect', 'abort'] as const)(
+    'settles an early-hints load before custom dehydration: %s',
+    async (outcome) => {
+      const lifecycleStarted = createControlledPromise<void>()
+      const lifecycleGate = createControlledPromise<string>()
+      const hintsLoadStarted = createControlledPromise<void>()
+      const hintsLoadGate = createControlledPromise<string>()
+      const hookGate = createControlledPromise<void>()
+      const controller = new AbortController()
+      const reason = new Error('request aborted during early-hints load')
+      let calls = 0
+      let lifecycleLoad: Promise<void> | undefined
+      let hintsLoad: Promise<void> | undefined
+      let reentered = false
+      let hinted = false
+      const router = makeRouter({
+        loader: async () => {
+          if (++calls === 1) {
+            return 'initial'
+          }
+          if (calls === 2) {
+            lifecycleStarted.resolve()
+            return lifecycleGate
+          }
+          hintsLoadStarted.resolve()
+          const data = await hintsLoadGate
+          if (outcome === 'redirect') {
+            throw redirect({ href: '/target', statusCode: 307 })
+          }
+          return data
+        },
+        head: ({ loaderData }: { loaderData: string }) => ({
+          links: [{ rel: 'preload', href: `/${loaderData}.png`, as: 'image' }],
+        }),
+        onEnter: () => {
+          if (!reentered) {
+            reentered = true
+            lifecycleLoad = router.load()
+          }
+        },
+      })
+      const hook = vi.fn(() => {
+        expect(router.state.matches.at(-1)?.loaderData).toBe('final')
+        return hookGate
+      })
+      router.update({ dehydrate: hook })
+      startMocks.router = router
+      const render = vi.fn(() => new Response('ok'))
+      const responsePromise = createStartHandler(render)(
+        new Request('http://localhost/', { signal: controller.signal }),
+        {
+          onEarlyHints: (event) => {
+            if (event.phase === 'dynamic' && !hinted) {
+              hinted = true
+              hintsLoad = router.load()
+            }
+          },
+          responseLinkHeader: true,
+        },
+      )
+      const settled = Promise.allSettled([responsePromise])
+      try {
+        await lifecycleStarted
+        lifecycleGate.resolve('lifecycle')
+        await hintsLoadStarted
+        expect(hook).not.toHaveBeenCalled()
+        if (outcome === 'abort') {
+          controller.abort(reason)
+          await expect(responsePromise).rejects.toBe(reason)
+        } else {
+          hintsLoadGate.resolve('final')
+          await hintsLoad
+          if (outcome === 'render') {
+            hookGate.resolve()
+            expect((await responsePromise).status).toBe(200)
+            expect(hook).toHaveBeenCalledOnce()
+            expect(render).toHaveBeenCalledOnce()
+          } else {
+            const response = await responsePromise
+            expect(response.status).toBe(307)
+            expect(response.headers.get('location')).toBe('/target')
+            expect(response.headers.get('Link')).toBeNull()
+          }
+        }
+        if (outcome !== 'render') {
+          expect(hook).not.toHaveBeenCalled()
+          expect(render).not.toHaveBeenCalled()
+        }
+      } finally {
+        lifecycleGate.resolve('lifecycle')
+        hintsLoadGate.resolve('final')
+        hookGate.resolve()
+        await Promise.allSettled([lifecycleLoad, hintsLoad])
+        await settled
+      }
+    },
+  )
+
   it.each(['lifecycle', 'dehydrate'] as const)(
     'collects final hints after a load started by %s',
     async (phase) => {

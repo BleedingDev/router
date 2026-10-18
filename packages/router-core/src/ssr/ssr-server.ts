@@ -462,6 +462,9 @@ export function attachRouterServerSsrUtils({
       }
       if (opts?.onBeforeDehydrate) {
         opts.onBeforeDehydrate()
+        if (router._serverLoads || router._serverLoadFailure) {
+          await waitForServerLoads(router, serverSsr, opts.signal)
+        }
         opts.signal?.throwIfAborted()
         if (
           cleanupStarted ||
