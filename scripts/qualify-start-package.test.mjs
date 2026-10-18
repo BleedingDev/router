@@ -7,7 +7,9 @@ import path from 'node:path'
 import {
   compareRegistryPayload,
   registryPayload,
-  rewriteStartDependencies,
+  validateStartPeers,
+  validateNormalStartManifest,
+  verifyInstalledPackage,
   assertSourceIdentity,
   validateRegistryDependencies,
 } from './qualify-start-package.mjs'
@@ -16,101 +18,169 @@ const core = {
   version: '1.171.38',
   url: 'https://github.com/BleedingDev/router/releases/download/ultramodern-router-core-0a4eed5ea37d/tanstack-router-core-1.171.38.tgz',
   dependencies: { '@tanstack/history': '1.162.5' },
+  parents: [],
 }
 const storage = {
   name: '@tanstack/start-storage-context',
   version: '1.167.40',
   url: 'https://github.com/BleedingDev/router/releases/download/ultramodern-start-storage-123456789abc/tanstack-start-storage-context-1.167.40.tgz',
-  dependencies: { '@tanstack/router-core': core.url },
+  dependencies: {},
+  peerDependencies: { '@tanstack/router-core': core.version },
+  parents: [core],
 }
 const client = {
   name: '@tanstack/start-client-core',
   version: '1.170.38',
   url: 'https://github.com/BleedingDev/router/releases/download/ultramodern-start-client-123456789abc/tanstack-start-client-core-1.170.38.tgz',
-  dependencies: {
-    '@tanstack/router-core': core.url,
-    '@tanstack/start-storage-context': storage.url,
+  dependencies: {},
+  peerDependencies: {
+    '@tanstack/router-core': core.version,
+    '@tanstack/start-storage-context': storage.version,
   },
+  parents: [core, storage],
 }
-test('staged manifest retains package identity and records real accepted parent edges', () => {
+test('shared peer validation preserves the packed manifest and binds exact accepted parents', () => {
   const source = {
     name: '@tanstack/start-server-core',
     version: '1.169.44',
     dependencies: {
-      '@tanstack/router-core': '1.171.38',
-      '@tanstack/start-storage-context': '1.167.40',
-      '@tanstack/start-client-core': '1.170.38',
       '@tanstack/history': '1.162.5',
       seroval: '^1.6.7',
     },
+    peerDependencies: {
+      '@tanstack/router-core': core.version,
+      '@tanstack/start-storage-context': storage.version,
+      '@tanstack/start-client-core': client.version,
+    },
   }
-  const packed = rewriteStartDependencies(source, [core, storage, client])
-  assert.equal(packed.name, source.name)
-  assert.equal(packed.version, source.version)
-  assert.deepEqual(packed.dependencies, {
-    '@tanstack/router-core': core.url,
-    '@tanstack/start-storage-context': storage.url,
-    '@tanstack/start-client-core': client.url,
-    '@tanstack/history': '1.162.5',
-    seroval: '^1.6.7',
-  })
-  assert.equal(source.dependencies['@tanstack/router-core'], '1.171.38')
+  const before = structuredClone(source)
+  validateStartPeers(source, [core, storage, client])
+  assert.deepEqual(source, before)
+  validateStartPeers(storage, [core])
+  validateStartPeers(client, [core, storage])
 })
 test('a bare sibling version cannot replace an absent accepted predecessor', () => {
+  assert.throws(() => validateStartPeers(client, [core]))
+})
+test('accepted parents must converge on the same exact required native core peer', () => {
   assert.throws(() =>
-    rewriteStartDependencies(
+    validateStartPeers(client, [
+      core,
       {
-        dependencies: {
-          '@tanstack/router-core': '1.171.38',
-          '@tanstack/start-storage-context': '1.167.40',
+        ...storage,
+        peerDependencies: {
+          '@tanstack/router-core': '1.171.37',
         },
       },
-      [core],
-    ),
+    ]),
   )
-})
-test('accepted parents must converge on the same immutable native core', () => {
-  assert.throws(() =>
-    rewriteStartDependencies(
-      { dependencies: { '@tanstack/start-storage-context': '1.167.40' } },
-      [
+  assert.throws(
+    () =>
+      validateStartPeers(client, [
         core,
         {
           ...storage,
-          dependencies: {
-            '@tanstack/router-core': 'https://example.invalid/other-core.tgz',
-          },
+          parents: [{ ...core, url: 'https://example.invalid/other-core.tgz' }],
         },
-      ],
-    ),
+      ]),
+    /authenticated parent lineage/,
   )
 })
-test('unresolved producer-local requests cannot escape in the staged archive', () => {
+test('producer-local or exotic requests cannot escape as transitive dependencies', () => {
   for (const request of [
     'workspace:*',
     'catalog:',
     'file:../dependency',
     'link:../dependency',
+    core.url,
+    'git+https://example.invalid/owner/repository.git',
+    'npm:seroval@1.6.7',
+    'owner/repository',
+    '../dependency',
+    '/tmp/dependency',
+    'C:\\dependency',
+    'git@github.com:owner/repository.git',
+    '',
   ]) {
     assert.throws(() =>
-      rewriteStartDependencies({ dependencies: { unrelated: request } }, [
+      validateStartPeers({ ...storage, dependencies: { unrelated: request } }, [
         core,
       ]),
     )
   }
 })
 
-test('parent URL assembly refuses a different normal packed workspace version', () => {
-  assert.throws(
-    () =>
-      rewriteStartDependencies(
-        { dependencies: { '@tanstack/router-core': '1.171.37' } },
-        [core],
-      ),
-    /normal pack/,
+test('normal pack contracts derive dependencies and peers independently from source', () => {
+  const source = {
+    name: storage.name,
+    version: storage.version,
+    dependencies: { '@tanstack/history': 'workspace:*', seroval: '^1.6.7' },
+    optionalDependencies: { cookie: '~1.0.0' },
+    peerDependencies: { '@tanstack/router-core': 'workspace:*' },
+    peerDependenciesMeta: { '@tanstack/router-core': { optional: false } },
+  }
+  const packed = {
+    ...source,
+    dependencies: { '@tanstack/history': '1.162.5', seroval: '^1.6.7' },
+    peerDependencies: { '@tanstack/router-core': core.version },
+  }
+  const versions = {
+    '@tanstack/history': '1.162.5',
+    '@tanstack/router-core': core.version,
+  }
+  const before = structuredClone({ source, packed })
+  assert.deepEqual(validateNormalStartManifest(source, packed, versions), {
+    dependencies: packed.dependencies,
+    optionalDependencies: packed.optionalDependencies,
+    peerDependencies: packed.peerDependencies,
+  })
+  assert.deepEqual({ source, packed }, before)
+  for (const changed of [
+    { dependencies: { ...packed.dependencies, seroval: '^1.6.9' } },
+    { dependencies: { ...packed.dependencies, unexpected: '1.0.0' } },
+    { dependencies: { seroval: '^1.6.7' } },
+    { optionalDependencies: { cookie: '^2.0.0' } },
+    { peerDependencies: { '@tanstack/router-core': '^1.171.38' } },
+    { peerDependenciesMeta: { '@tanstack/router-core': { optional: true } } },
+  ]) {
+    assert.throws(() =>
+      validateNormalStartManifest(source, { ...packed, ...changed }, versions),
+    )
+  }
+  assert.throws(() => validateNormalStartManifest(source, packed, {}))
+  assert.throws(() =>
+    validateNormalStartManifest(
+      {
+        ...source,
+        peerDependencies: { '@tanstack/router-core': 'workspace:^' },
+      },
+      packed,
+      versions,
+    ),
   )
 })
-test('history and stubs must retain actual registry source versions before assembly', () => {
+
+test('ordinary registry ranges remain unchanged in normal packed dependencies', () => {
+  for (const request of ['1.6.7', '^1.6.7', '~1.6.7', '>=1.6.7 <2', '*']) {
+    const packed = { ...storage, dependencies: { seroval: request } }
+    validateStartPeers(packed, [core])
+    validateNormalStartManifest(packed, packed, {})
+  }
+})
+
+test('shared authority cannot be a ranged, optional or duplicated dependency', () => {
+  for (const change of [
+    { peerDependencies: {} },
+    { peerDependencies: { '@tanstack/router-core': '^1.171.38' } },
+    { peerDependencies: { '@tanstack/router-core': '1.171.37' } },
+    { peerDependenciesMeta: { '@tanstack/router-core': { optional: true } } },
+    { dependencies: { '@tanstack/router-core': core.url } },
+    { optionalDependencies: { '@tanstack/router-core': core.version } },
+  ]) {
+    assert.throws(() => validateStartPeers({ ...storage, ...change }, [core]))
+  }
+})
+test('history and stubs must retain actual registry source versions before qualification', () => {
   const registry = [
     { name: '@tanstack/history', version: '1.162.5' },
     { name: '@tanstack/start-fn-stubs', version: '1.162.0' },
@@ -169,6 +239,48 @@ test('source identity compares exact package paths and propagates any source mis
   assert.throws(() =>
     assertSourceIdentity(sha, head, '@tanstack/../../escape', () => {}),
   )
+})
+
+test('installed archive proof checks every file and byte, including manifests and extra files', () => {
+  const temporaryRoot = process.env.RUNNER_TEMP ?? process.env.OWNED_TEMP_DIR
+  assert(temporaryRoot)
+  const directory = mkdtempSync(
+    path.join(temporaryRoot, 'start-installed-bytes-'),
+  )
+  try {
+    const installed = path.join(directory, 'package')
+    mkdirSync(installed)
+    const manifest = path.join(installed, 'package.json')
+    const source = path.join(installed, 'index.js')
+    writeFileSync(
+      manifest,
+      JSON.stringify({ name: storage.name, version: storage.version }),
+    )
+    writeFileSync(source, 'export const context = true')
+    const bytes = execFileSync('tar', ['-czf', '-', '-C', directory, 'package'])
+    verifyInstalledPackage(bytes, manifest)
+    writeFileSync(source, 'export const context = false')
+    assert.throws(() => verifyInstalledPackage(bytes, manifest), /bytes differ/)
+    writeFileSync(source, 'export const context = true')
+    writeFileSync(path.join(installed, 'unexpected.js'), 'injected')
+    assert.throws(
+      () => verifyInstalledPackage(bytes, manifest),
+      /file set differs/,
+    )
+    rmSync(path.join(installed, 'unexpected.js'))
+    writeFileSync(
+      manifest,
+      JSON.stringify({ name: storage.name, version: '0.0.0' }),
+    )
+    assert.throws(() => verifyInstalledPackage(bytes, manifest), /bytes differ/)
+    rmSync(source)
+    assert.throws(
+      () => verifyInstalledPackage(bytes, manifest),
+      /file set differs/,
+    )
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 test('registry payload without gitHead must equal the real normal pack, under the explicit runtime and source-map content policy', () => {

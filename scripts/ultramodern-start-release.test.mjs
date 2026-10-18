@@ -125,7 +125,7 @@ test('publication requires the fork manual main Actions environment', () => {
   }
 })
 
-test('accepted manifest preserves normal source identity and exact assembly; tampering fails', () => {
+test('accepted manifest preserves normal source identity and exact peers; tampering fails', () => {
   const temporaryRoot = process.env.RUNNER_TEMP ?? process.env.OWNED_TEMP_DIR
   assert(
     temporaryRoot,
@@ -150,14 +150,14 @@ test('accepted manifest preserves normal source identity and exact assembly; tam
     const source = {
       name: '@tanstack/start-storage-context',
       version: '1.167.40',
-      dependencies: { '@tanstack/router-core': 'workspace:*' },
+      peerDependencies: { '@tanstack/router-core': 'workspace:*' },
       exports: {
         '.': { import: { types: './index.d.ts', default: './index.js' } },
       },
     }
     const packed = {
       ...source,
-      dependencies: { '@tanstack/router-core': core.url },
+      peerDependencies: { '@tanstack/router-core': core.version },
     }
     for (const [name, bytes] of [
       ['package.json', JSON.stringify(packed)],
@@ -205,7 +205,8 @@ test('accepted manifest preserves normal source identity and exact assembly; tam
           createHash('sha512')
             .update(readFileSync(path.join(output, archive)))
             .digest('base64'),
-        dependencies: packed.dependencies,
+        dependencies: {},
+        peerDependencies: packed.peerDependencies,
       },
       parents: [core],
       registry: [
@@ -267,7 +268,10 @@ test('accepted manifest preserves normal source identity and exact assembly; tam
         c.qualification.packageChecks[1] = 'attw --profile node16'
       },
       (c) => {
-        c.package.dependencies['@tanstack/router-core'] = '1.171.38'
+        c.package.peerDependencies['@tanstack/router-core'] = '^1.171.38'
+      },
+      (c) => {
+        c.package.dependencies['@tanstack/router-core'] = core.url
       },
     ]) {
       const changed = structuredClone(cohort)

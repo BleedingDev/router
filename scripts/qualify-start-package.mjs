@@ -7,6 +7,7 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  lstatSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
@@ -212,6 +213,7 @@ export async function parent(tag, expectedName, expectedVersion) {
     tag,
     sourceSha: manifest.sourceSha,
     runId: manifest.runId,
+    parents: manifest.parents ?? [],
   }
 }
 
@@ -255,7 +257,7 @@ export function validateRegistryDependencies(packed, registry) {
 // manifests after rejecting consumer lifecycle hooks, and mappings in flat source
 // maps. Preserve every other key, including
 // unknown future fields and conditional export/import order.
-export function registryPayload(bytes, name, version) {
+function archiveFiles(bytes) {
   assert(
     Buffer.isBuffer(bytes) &&
       bytes.length > 0 &&
@@ -280,13 +282,20 @@ export function registryPayload(bytes, name, version) {
   )
   const files = entries.filter((entry) => !entry.endsWith('/')).sort()
   assert(files.includes('package/package.json'))
-  const payload = files.map((filename) => {
+  return files.map((filename) => {
     assert(
       /^package\/[A-Za-z0-9_.@+\/-]+$/.test(filename) &&
         !filename.split('/').includes('..'),
       'Unsafe package member',
     )
-    let content = tar(['-xOzf', '-', filename])
+    return [filename, tar(['-xOzf', '-', filename])]
+  })
+}
+
+export function registryPayload(bytes, name, version) {
+  const files = archiveFiles(bytes)
+  const payload = files.map(([filename, bytes]) => {
+    let content = bytes
     if (filename === 'package/package.json') {
       const manifest = JSON.parse(content)
       assert.equal(manifest.name, name)
@@ -410,53 +419,142 @@ export async function verifyRegistryEvidence(entry, sourceSha) {
   })
 }
 
-export function rewriteStartDependencies(packed, parents) {
+const sharedParents = {
+  '@tanstack/start-storage-context': ['@tanstack/router-core'],
+  '@tanstack/start-client-core': [
+    '@tanstack/router-core',
+    '@tanstack/start-storage-context',
+  ],
+  '@tanstack/start-server-core': [
+    '@tanstack/router-core',
+    '@tanstack/start-storage-context',
+    '@tanstack/start-client-core',
+  ],
+}
+
+export function validateStartPeers(packed, parents) {
+  assert(sharedParents[packed.name], 'Unknown Start package')
+  assert.deepEqual(
+    parents.map((entry) => entry.name),
+    sharedParents[packed.name],
+    'Every shared peer needs its authenticated parent archive',
+  )
   for (const accepted of parents) {
-    for (const expected of parents) {
-      if (Object.hasOwn(accepted.dependencies, expected.name)) {
-        assert.equal(
-          accepted.dependencies[expected.name],
-          expected.url,
-          'Accepted parents must share the exact immutable lineage',
+    const names = sharedParents[accepted.name]
+    if (!names) continue
+    assert.deepEqual(
+      accepted.parents,
+      parents.filter((entry) => names.includes(entry.name)),
+      'Accepted parents must retain the exact authenticated parent lineage',
+    )
+  }
+  for (const owner of [packed, ...parents]) {
+    for (const name of sharedParents[owner.name] ?? []) {
+      const expected = parents.find((entry) => entry.name === name)
+      assert(expected, `${name} needs an accepted parent archive`)
+      assert.equal(
+        owner.peerDependencies?.[name],
+        expected.version,
+        `${owner.name}: normal pack must retain the exact ${name} peer`,
+      )
+      assert.notEqual(owner.peerDependenciesMeta?.[name]?.optional, true)
+      assert.equal(owner.dependencies?.[name], undefined)
+      assert.equal(owner.optionalDependencies?.[name], undefined)
+    }
+    for (const requests of [
+      owner.dependencies,
+      owner.optionalDependencies,
+      owner.peerDependencies,
+    ]) {
+      for (const [name, request] of Object.entries(requests ?? {})) {
+        assert.equal(typeof request, 'string')
+        assert(
+          request.trim().length > 0 && !/[:/\\]/.test(request),
+          `${owner.name}: ${name} must resolve outside the producer without exotic transitives`,
         )
       }
     }
   }
-  const dependencies = { ...packed.dependencies }
-  for (const accepted of parents) {
-    if (Object.hasOwn(dependencies, accepted.name)) {
-      assert.equal(
-        dependencies[accepted.name],
-        accepted.version,
-        `${accepted.name}: normal pack must resolve the accepted source version before URL assembly`,
-      )
-      dependencies[accepted.name] = accepted.url
-    }
-  }
-  for (const [name, request] of Object.entries(dependencies)) {
-    assert(
-      !/^(?:workspace|catalog|file|link):/.test(request),
-      `${name} must resolve outside the producer`,
+}
+
+export function validateNormalStartManifest(source, packed, workspaceVersions) {
+  const expected = {}
+  for (const field of [
+    'dependencies',
+    'optionalDependencies',
+    'peerDependencies',
+  ]) {
+    expected[field] = Object.fromEntries(
+      Object.entries(source[field] ?? {}).map(([name, request]) => {
+        assert.equal(typeof request, 'string')
+        if (!request.startsWith('workspace:')) {
+          return [name, request]
+        }
+        assert.equal(
+          request,
+          'workspace:*',
+          'Only the owning exact workspace version is supported',
+        )
+        assert.match(
+          workspaceVersions[name],
+          /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$/,
+        )
+        return [name, workspaceVersions[name]]
+      }),
     )
-    if (
-      name === '@tanstack/router-core' ||
-      name === '@tanstack/start-client-core' ||
-      name === '@tanstack/start-storage-context'
-    ) {
-      assert.equal(
-        request,
-        parents.find((entry) => entry.name === name)?.url,
-        `${name} needs an accepted parent archive`,
+    assert.deepEqual(
+      packed[field] ?? {},
+      expected[field],
+      `Normal pack ${field} must match the owning source manifest`,
+    )
+  }
+  assert.deepEqual(packed.peerDependenciesMeta, source.peerDependenciesMeta)
+  return expected
+}
+
+export function verifyInstalledPackage(bytes, manifestPath) {
+  const directory = path.dirname(realpathSync(manifestPath))
+  const files = archiveFiles(bytes)
+  const expected = files.map(([filename]) => filename.slice('package/'.length))
+  const actual = []
+  function visit(relative = '') {
+    for (const name of readdirSync(path.join(directory, relative))) {
+      if (!relative && name === 'node_modules') continue
+      const filename = path.join(relative, name)
+      const stat = lstatSync(path.join(directory, filename))
+      assert(
+        !stat.isSymbolicLink(),
+        'Installed package payload must not contain symlinks',
       )
+      if (stat.isDirectory()) visit(filename)
+      else {
+        assert(
+          stat.isFile(),
+          'Installed package payload must contain regular files',
+        )
+        actual.push(filename.split(path.sep).join('/'))
+      }
     }
   }
-  return { ...packed, dependencies }
+  visit()
+  assert.deepEqual(
+    actual.sort(),
+    expected,
+    'Installed archive file set differs',
+  )
+  for (const [filename, content] of files) {
+    assert.deepEqual(
+      readFileSync(path.join(directory, filename.slice('package/'.length))),
+      content,
+      `Installed archive bytes differ: ${filename}`,
+    )
+  }
 }
 
 export function validateArchive(source, packed, entries, dependencies) {
   assert.equal(packed.name, source.name)
   assert.equal(packed.version, source.version)
-  assert.deepEqual(packed.dependencies, dependencies)
+  assert.deepEqual(packed.dependencies ?? {}, dependencies)
   assert.deepEqual(packed.exports, source.exports)
   assert.deepEqual(packed.imports, source.imports)
   const files = new Set(entries)
@@ -480,21 +578,31 @@ export function validateArchive(source, packed, entries, dependencies) {
   targets(packed.imports)
 }
 
-function accept(archive, packed, parents, registry) {
+async function accept(archive, packed, parents, registry) {
+  const archives = [{ name: packed.name, bytes: readFileSync(archive) }]
+  for (const entry of [...parents, ...registry]) {
+    const bytes = await fetchBytes(entry.url ?? entry.tarball)
+    assert.equal(hash(bytes), entry.integrity)
+    archives.push({ name: entry.name, bytes })
+  }
   const types = json(
     path.join(root, 'node_modules/@types/node/package.json'),
   ).version
   return withConsumerDirectory((directory, external, renew) => {
     const env = consumerEnvironment(process.env)
     const virtualStore = external ?? path.join(directory, 'node_modules/.pnpm')
-    const policy = `minimumReleaseAge: 1440\nminimumReleaseAgeStrict: true\nminimumReleaseAgeExclude: []\npackageImportMethod: clone-or-copy\ntrustPolicy: no-downgrade\nvirtualStoreDir: ${JSON.stringify(virtualStore)}\n${process.env.ROUTER_CORE_STORE_DIR ? `storeDir: ${JSON.stringify(process.env.ROUTER_CORE_STORE_DIR)}\n` : ''}`
+    const policy = `minimumReleaseAge: 1440\nminimumReleaseAgeStrict: true\nminimumReleaseAgeExclude: []\nblockExoticSubdeps: true\nautoInstallPeers: false\npackageImportMethod: clone-or-copy\ntrustPolicy: no-downgrade\nvirtualStoreDir: ${JSON.stringify(virtualStore)}\n${process.env.ROUTER_CORE_STORE_DIR ? `storeDir: ${JSON.stringify(process.env.ROUTER_CORE_STORE_DIR)}\n` : ''}`
+    const dependencies = Object.fromEntries([
+      [packed.name, `file:${archive}`],
+      ...parents.map((entry) => [entry.name, entry.url]),
+    ])
     writeFileSync(
       path.join(directory, 'package.json'),
       JSON.stringify({
         private: true,
         type: 'module',
         packageManager: json(path.join(root, 'package.json')).packageManager,
-        dependencies: { [packed.name]: `file:${archive}` },
+        dependencies,
         devDependencies: { '@types/node': types },
       }),
     )
@@ -506,6 +614,8 @@ function accept(archive, packed, parents, registry) {
           'minimumReleaseAge',
           'minimumReleaseAgeStrict',
           'minimumReleaseAgeExclude',
+          'blockExoticSubdeps',
+          'autoInstallPeers',
           'packageImportMethod',
           'trustPolicy',
           'virtualStoreDir',
@@ -516,6 +626,8 @@ function accept(archive, packed, parents, registry) {
         ]),
       )
     const effective = configuration()
+    assert.equal(effective.blockExoticSubdeps, true)
+    assert.equal(effective.autoInstallPeers, false)
     validateConsumerConfiguration(effective, undefined, directory, virtualStore)
     if (process.env.ROUTER_CORE_STORE_DIR) {
       assert.equal(
@@ -548,6 +660,16 @@ function accept(archive, packed, parents, registry) {
     const lock = yaml.parse(
       readFileSync(path.join(directory, 'pnpm-lock.yaml'), 'utf8'),
     )
+    for (const [name, request] of Object.entries(dependencies)) {
+      assert.equal(lock.importers['.'].dependencies[name].specifier, request)
+    }
+    for (const entry of parents) {
+      assert.equal(
+        lock.packages[`${entry.name}@${entry.url}`].resolution.integrity,
+        entry.integrity,
+        `Installed ${entry.name} must retain authenticated parent bytes`,
+      )
+    }
     for (const entry of registry) {
       assert.equal(
         lock.packages[`${entry.name}@${entry.version}`].resolution.integrity,
@@ -555,15 +677,64 @@ function accept(archive, packed, parents, registry) {
         `Installed ${entry.name} must retain authenticated registry bytes`,
       )
     }
-    // Read the actual installed parent manifests from each importing package;
-    // a matching root dependency alone would not prove the transitive closure.
-    const closure = `import assert from 'node:assert/strict'; import {createRequire} from 'node:module'; import {readFileSync,realpathSync} from 'node:fs'; import {fileURLToPath} from 'node:url'; const expected=${JSON.stringify(parents)}; const registry=${JSON.stringify(registry)}; const seen=new Map(); function visit(file){const pkg=JSON.parse(readFileSync(file,'utf8')); const previous=seen.get(pkg.name); assert(!previous||previous===realpathSync(file),'Duplicate native instance: '+pkg.name); if(previous){return;}seen.set(pkg.name,realpathSync(file));const owner=createRequire(file);for(const p of expected){if(Object.hasOwn(pkg.dependencies??{},p.name)){assert.equal(pkg.dependencies[p.name],p.url);const target=owner.resolve(p.name+'/package.json');const found=JSON.parse(readFileSync(target,'utf8'));assert.equal(found.version,p.version);assert.deepEqual(found.dependencies,p.dependencies);visit(target)}}for(const entry of registry){if(Object.hasOwn(pkg.dependencies??{},entry.name)){assert.equal(pkg.dependencies[entry.name],entry.version);const target=owner.resolve(entry.name+'/package.json');assert.equal(JSON.parse(readFileSync(target,'utf8')).version,entry.version);visit(target)}}} const file=import.meta.resolve(${JSON.stringify(`${packed.name}/package.json`)});const pkg=JSON.parse(readFileSync(new URL(file),'utf8'));assert.equal(pkg.version,${JSON.stringify(packed.version)});assert.deepEqual(pkg.dependencies,${JSON.stringify(packed.dependencies)});visit(fileURLToPath(file));`
-    run(
-      process.execPath,
-      ['--input-type=module', '--eval', closure],
-      directory,
-      env,
+    const consumer = createRequire(path.join(directory, 'package.json'))
+    const seen = new Map()
+    const direct = new Map(
+      [packed, ...parents].map((entry) => [
+        entry.name,
+        realpathSync(consumer.resolve(`${entry.name}/package.json`)),
+      ]),
     )
+    function visit(filename) {
+      filename = realpathSync(filename)
+      const manifest = json(filename)
+      const previous = seen.get(manifest.name)
+      assert(
+        !previous || previous === filename,
+        `Duplicate native instance: ${manifest.name}`,
+      )
+      if (previous) return
+      seen.set(manifest.name, filename)
+      const owner = createRequire(filename)
+      for (const entry of parents) {
+        if (!Object.hasOwn(manifest.peerDependencies ?? {}, entry.name))
+          continue
+        assert.equal(manifest.peerDependencies[entry.name], entry.version)
+        const target = realpathSync(owner.resolve(`${entry.name}/package.json`))
+        assert.equal(
+          target,
+          direct.get(entry.name),
+          `Duplicate shared peer: ${entry.name}`,
+        )
+        visit(target)
+      }
+      for (const entry of registry) {
+        if (!Object.hasOwn(manifest.dependencies ?? {}, entry.name)) continue
+        assert.equal(manifest.dependencies[entry.name], entry.version)
+        const target = owner.resolve(`${entry.name}/package.json`)
+        assert.equal(json(target).version, entry.version)
+        visit(target)
+      }
+    }
+    for (const [name, filename] of direct) {
+      const expected =
+        name === packed.name
+          ? packed
+          : parents.find((entry) => entry.name === name)
+      const manifest = json(filename)
+      assert.equal(manifest.name, name)
+      assert.equal(manifest.version, expected.version)
+      assert.deepEqual(manifest.dependencies ?? {}, expected.dependencies ?? {})
+      assert.deepEqual(
+        manifest.peerDependencies ?? {},
+        expected.peerDependencies ?? {},
+      )
+      visit(filename)
+    }
+    for (const entry of archives) {
+      assert(seen.has(entry.name), `Missing installed archive: ${entry.name}`)
+      verifyInstalledPackage(entry.bytes, seen.get(entry.name))
+    }
     const imports = Object.keys(packed.exports).map((key) =>
       key === '.' ? packed.name : `${packed.name}${key.slice(1)}`,
     )
@@ -766,45 +937,39 @@ export async function qualifyStartPackage(profile, directory, parentTags = {}) {
   } finally {
     rmSync(registryStaging, { recursive: true, force: true })
   }
-  const staging = mkdtempSync(path.join(output, 'staging-'))
-  let packed
-  let archive
-  try {
-    const raw = path.join(staging, 'raw')
-    mkdirSync(raw)
-    run('pnpm', ['--filter', source.name, 'pack', '--pack-destination', raw])
-    const files = readdirSync(raw)
-    assert.equal(files.length, 1)
-    run('tar', ['-xzf', path.join(raw, files[0]), '-C', staging])
-    const manifest = path.join(staging, 'package/package.json')
-    const normal = json(manifest)
-    packed = rewriteStartDependencies(normal, parents)
-    validateRegistryDependencies(normal, registry)
-    writeFileSync(manifest, `${JSON.stringify(packed, null, 2)}\n`)
-    run('pnpm', [
-      '--dir',
-      path.join(staging, 'package'),
-      'pack',
-      '--pack-destination',
-      output,
-    ])
-    archive = readdirSync(output).find((file) => file.endsWith('.tgz'))
-    assert(archive)
-    const archivePath = path.join(output, archive)
-    const final = JSON.parse(
-      read('tar', ['-xOf', archivePath, 'package/package.json']),
-    )
-    validateArchive(
-      source,
-      final,
-      read('tar', ['-tzf', archivePath]).split('\n'),
-      packed.dependencies,
-    )
-    packed = final
-  } finally {
-    rmSync(staging, { recursive: true, force: true })
-  }
+  run('pnpm', ['--filter', source.name, 'pack', '--pack-destination', output])
+  const files = readdirSync(output)
+  assert.equal(files.length, 1)
+  const archive = files[0]
   const archivePath = path.join(output, archive)
+  const packed = JSON.parse(
+    read('tar', ['-xOf', archivePath, 'package/package.json']),
+  )
+  const workspaceVersions = Object.fromEntries(
+    [
+      'router-core',
+      'history',
+      'start-storage-context',
+      'start-client-core',
+      'start-fn-stubs',
+    ].map((basename) => {
+      const own = json(path.join(root, 'packages', basename, 'package.json'))
+      return [own.name, own.version]
+    }),
+  )
+  const expected = validateNormalStartManifest(
+    source,
+    packed,
+    workspaceVersions,
+  )
+  validateStartPeers(packed, parents)
+  validateRegistryDependencies(packed, registry)
+  validateArchive(
+    source,
+    packed,
+    read('tar', ['-tzf', archivePath]).split('\n'),
+    expected.dependencies,
+  )
   const integrity = hash(readFileSync(archivePath))
   run('pnpm', [
     '--filter',
@@ -823,7 +988,7 @@ export async function qualifyStartPackage(profile, directory, parentTags = {}) {
     'esm-only',
     archivePath,
   ])
-  accept(archivePath, packed, parents, registry)
+  await accept(archivePath, packed, parents, registry)
   assert.equal(hash(readFileSync(archivePath)), integrity)
   const headAfter = read('git', ['rev-parse', 'HEAD'])
   const statusAfter = read('git', [
@@ -864,7 +1029,8 @@ export async function qualifyStartPackage(profile, directory, parentTags = {}) {
       version: packed.version,
       archive,
       integrity,
-      dependencies: packed.dependencies,
+      dependencies: packed.dependencies ?? {},
+      peerDependencies: packed.peerDependencies ?? {},
     },
     parents,
     registry,

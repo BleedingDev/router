@@ -106,12 +106,16 @@
     "node": ">=22.12.0"
   },
   "dependencies": {
-    "@tanstack/router-core": "workspace:*",
     "@tanstack/start-fn-stubs": "workspace:*",
-    "@tanstack/start-storage-context": "workspace:*",
     "seroval": "^1.6.7"
   },
+  "peerDependencies": {
+    "@tanstack/router-core": "workspace:*",
+    "@tanstack/start-storage-context": "workspace:*"
+  },
   "devDependencies": {
+    "@tanstack/router-core": "workspace:*",
+    "@tanstack/start-storage-context": "workspace:*",
     "vite": "*",
     "@types/node": ">=20",
     "@tanstack/vite-config": "catalog:",

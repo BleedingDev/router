@@ -13,7 +13,8 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import {
   validateArchive,
-  rewriteStartDependencies,
+  validateStartPeers,
+  validateNormalStartManifest,
   validateRegistryDependencies,
   assertSourceIdentity,
   parent,
@@ -146,23 +147,13 @@ export function validateStartReleaseCohort(
   assert.equal(packed.name, entry.name)
   assert.equal(packed.version, entry.version)
   assert.deepEqual(packed.dependencies ?? {}, entry.dependencies)
-  const expectedDependencies = Object.fromEntries(
-    Object.entries(source.dependencies ?? {}).map(([name, request]) => {
-      if (!request.startsWith('workspace:')) {
-        return [name, request]
-      }
-      assert.equal(
-        request,
-        'workspace:*',
-        'Only the owning exact workspace version is supported',
-      )
-      assert.match(
-        workspaceVersions[name],
-        /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$/,
-      )
-      return [name, workspaceVersions[name]]
-    }),
-  )
+  assert.deepEqual(packed.peerDependencies ?? {}, entry.peerDependencies)
+  const {
+    dependencies: expectedDependencies,
+    peerDependencies: expectedPeers,
+  } = validateNormalStartManifest(source, packed, workspaceVersions)
+  assert.deepEqual(entry.dependencies, expectedDependencies)
+  assert.deepEqual(entry.peerDependencies, expectedPeers)
   const expectedParents = [
     '@tanstack/router-core',
     ...(cohort.profile === 'storage'
@@ -214,11 +205,7 @@ export function validateStartReleaseCohort(
     { dependencies: expectedDependencies },
     cohort.registry,
   )
-  const assembled = rewriteStartDependencies(
-    { dependencies: expectedDependencies },
-    cohort.parents,
-  )
-  assert.deepEqual(entry.dependencies, assembled.dependencies)
+  validateStartPeers(packed, cohort.parents)
   assert.equal(
     cohort.tag,
     `ultramodern-start-${cohort.profile}-${run.head_sha.slice(0, 12)}`,
@@ -229,7 +216,7 @@ export function validateStartReleaseCohort(
     execFileSync('tar', ['-tzf', archivePath], { encoding: 'utf8' })
       .trim()
       .split('\n'),
-    assembled.dependencies,
+    expectedDependencies,
   )
   return ['start-package.json', entry.archive]
 }

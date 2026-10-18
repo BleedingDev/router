@@ -15218,15 +15218,9 @@ importers:
 
   packages/start-client-core:
     dependencies:
-      '@tanstack/router-core':
-        specifier: workspace:*
-        version: link:../router-core
       '@tanstack/start-fn-stubs':
         specifier: workspace:*
         version: link:../start-fn-stubs
-      '@tanstack/start-storage-context':
-        specifier: workspace:*
-        version: link:../start-storage-context
       seroval:
         specifier: ^1.6.7
         version: 1.6.7
@@ -15234,6 +15228,12 @@ importers:
       '@arethetypeswrong/cli':
         specifier: 'catalog:'
         version: 0.18.4
+      '@tanstack/router-core':
+        specifier: workspace:*
+        version: link:../router-core
+      '@tanstack/start-storage-context':
+        specifier: workspace:*
+        version: link:../start-storage-context
       '@tanstack/vite-config':
         specifier: 'catalog:'
         version: 0.5.2(@types/node@25.0.9)(@typescript/typescript6@6.0.2)(supports-color@10.2.2)(vite@8.3.4(@types/node@25.0.9)(esbuild@0.28.2)(jiti@2.7.0)(sass-embedded@1.105.1)(sass@1.97.2)(terser@5.51.2)(tsx@4.20.3)(yaml@2.9.0))
@@ -15385,15 +15385,6 @@ importers:
       '@tanstack/history':
         specifier: workspace:*
         version: link:../history
-      '@tanstack/router-core':
-        specifier: workspace:*
-        version: link:../router-core
-      '@tanstack/start-client-core':
-        specifier: workspace:*
-        version: link:../start-client-core
-      '@tanstack/start-storage-context':
-        specifier: workspace:*
-        version: link:../start-storage-context
       cookie-es:
         specifier: ^3.0.0
         version: 3.1.1
@@ -15410,6 +15401,15 @@ importers:
       '@standard-schema/spec':
         specifier: ^1.0.0
         version: 1.0.0
+      '@tanstack/router-core':
+        specifier: workspace:*
+        version: link:../router-core
+      '@tanstack/start-client-core':
+        specifier: workspace:*
+        version: link:../start-client-core
+      '@tanstack/start-storage-context':
+        specifier: workspace:*
+        version: link:../start-storage-context
       '@tanstack/vite-config':
         specifier: 'catalog:'
         version: 0.5.2(@types/node@25.0.9)(@typescript/typescript6@6.0.2)(supports-color@10.2.2)(vite@8.3.4(@types/node@25.0.9)(esbuild@0.28.2)(jiti@2.7.0)(sass-embedded@1.105.1)(sass@1.97.2)(terser@5.51.2)(tsx@4.20.3)(yaml@2.9.0))
@@ -15476,14 +15476,13 @@ importers:
         version: 5.0.4(@opentelemetry/api@1.9.1)(@types/node@25.0.9)(@vitest/ui@5.0.4)(jsdom@25.0.1(supports-color@10.2.2))(msw@2.15.0(@types/node@25.0.9)(@typescript/typescript6@6.0.2))(vite@8.3.4(@types/node@25.0.9)(esbuild@0.28.2)(jiti@2.7.0)(sass-embedded@1.105.1)(sass@1.97.2)(terser@5.51.2)(tsx@4.20.3)(yaml@2.9.0))
 
   packages/start-storage-context:
-    dependencies:
-      '@tanstack/router-core':
-        specifier: workspace:*
-        version: link:../router-core
     devDependencies:
       '@arethetypeswrong/cli':
         specifier: 'catalog:'
         version: 0.18.4
+      '@tanstack/router-core':
+        specifier: workspace:*
+        version: link:../router-core
       '@tanstack/vite-config':
         specifier: 'catalog:'
         version: 0.5.2(@types/node@25.0.9)(@typescript/typescript6@6.0.2)(supports-color@10.2.2)(vite@8.3.4(@types/node@25.0.9)(esbuild@0.28.2)(jiti@2.7.0)(sass-embedded@1.105.1)(sass@1.97.2)(terser@5.51.2)(tsx@4.20.3)(yaml@2.9.0))
