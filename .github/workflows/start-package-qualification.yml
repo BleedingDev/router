@@ -1,0 +1,61 @@
+name: Start Package Qualification
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Package to qualify after its immutable parents exist
+        required: true
+        type: choice
+        options: [storage, client, server]
+      core_tag:
+        description: Accepted immutable core tag matching the source at this commit
+        required: true
+        type: string
+      storage_tag:
+        description: Accepted immutable storage tag (required for client and server)
+        type: string
+      client_tag:
+        description: Accepted immutable client tag (required for server)
+        type: string
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: start-package-${{ inputs.profile }}-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  start-package:
+    name: Qualify the exact Start package
+    if: github.repository == 'BleedingDev/router' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CI: 'true'
+      NX_NO_CLOUD: 'true'
+      NX_DAEMON: 'false'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: TanStack/config/.github/setup@e4b48f16568324f76f467aa4c2aac2f05db632c3
+      - name: Check exact dependency graph guards
+        run: node --test scripts/qualify-start-package.test.mjs
+      - name: Prepare accepted-parent input
+        env:
+          CORE_TAG: ${{ inputs.core_tag }}
+          STORAGE_TAG: ${{ inputs.storage_tag }}
+          CLIENT_TAG: ${{ inputs.client_tag }}
+        run: node -e 'require("node:fs").writeFileSync(process.env.RUNNER_TEMP+"/start-parents.json",JSON.stringify({core:process.env.CORE_TAG,storage:process.env.STORAGE_TAG,client:process.env.CLIENT_TAG}))'
+      - name: Qualify the exact package and installed closure
+        env:
+          PROFILE: ${{ inputs.profile }}
+        run: node scripts/qualify-start-package.mjs "$PROFILE" "$RUNNER_TEMP/start-package" "$RUNNER_TEMP/start-parents.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: start-package-${{ inputs.profile }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/start-package
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
