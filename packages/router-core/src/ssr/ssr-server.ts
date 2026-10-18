@@ -491,10 +491,27 @@ export function attachRouterServerSsrUtils({
         }
       }
       const dehydrate = router.options.dehydrate
+      let hookResult = dehydrate?.call(router.options)
+      if (router._serverLoads || router._serverLoadFailure) {
+        // The hook may return unrelated pending work after starting a load.
+        // Observe its result now, but let a terminal load finish the request
+        // without waiting for that work. Reuse this promise for thenables.
+        hookResult = Promise.resolve(hookResult)
+        void hookResult.catch(() => {})
+        await waitForServerLoads(router, serverSsr, opts?.signal)
+        opts?.signal?.throwIfAborted()
+        if (
+          cleanupStarted ||
+          router.serverSsr !== serverSsr ||
+          hasServerRedirect(router)
+        ) {
+          return
+        }
+      }
       const dehydratedData = dehydrate
         ? opts?.signal
-          ? await waitForReason(dehydrate.call(router.options), opts.signal)
-          : await dehydrate.call(router.options)
+          ? await waitForReason(hookResult, opts.signal)
+          : await hookResult
         : undefined
       // A custom hook can start a load. Capture matches only after it settles.
       if (router._serverLoads || router._serverLoadFailure) {

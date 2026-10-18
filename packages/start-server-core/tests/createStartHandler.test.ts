@@ -1715,6 +1715,94 @@ describe('createStartHandler early hints', () => {
     expect(render).not.toHaveBeenCalled()
     expect(router.state).toMatchObject({ status: 'idle', isLoading: false })
   })
+
+  it.each(['redirect', 'failure', 'render'] as const)(
+    'observes a hook-started %s while the hook result remains pending',
+    async (outcome) => {
+      const started = createControlledPromise<void>()
+      const loadGate = createControlledPromise<void>()
+      const hookGate = createControlledPromise<{ custom: string }>()
+      const reason = new Error('hook-started lifecycle failed')
+      let calls = 0
+      let nested: Promise<void> | undefined
+      let nestedSettlement:
+        | Promise<Array<PromiseSettledResult<void>>>
+        | undefined
+      const router = makeRouter({
+        loader: async () => {
+          if (++calls > 1) {
+            started.resolve()
+            await loadGate
+            if (outcome === 'redirect') {
+              throw redirect({ href: '/target', statusCode: 307 })
+            }
+          }
+          return 'ready'
+        },
+        onStay: () => {
+          if (outcome === 'failure') {
+            throw reason
+          }
+        },
+      })
+      const hook = vi.fn(() => {
+        nested = router.load()
+        nestedSettlement = Promise.allSettled([nested])
+        return hookGate
+      })
+      router.update({ dehydrate: hook })
+      startMocks.router = router
+      const render = vi.fn(() => new Response('ok'))
+      const responsePromise = Promise.resolve(
+        createStartHandler(render)(new Request('http://localhost/'), {}),
+      )
+      let result:
+        | { response: Response; error?: never }
+        | { response?: never; error: unknown }
+        | undefined
+      const settled = responsePromise.then(
+        (response) => {
+          result = { response }
+        },
+        (error) => {
+          result = { error }
+        },
+      )
+      try {
+        await started
+        expect(hook).toHaveBeenCalledOnce()
+        expect(render).not.toHaveBeenCalled()
+        loadGate.resolve()
+        await nestedSettlement
+        if (outcome === 'render') {
+          expect(result).toBeUndefined()
+          expect(render).not.toHaveBeenCalled()
+          hookGate.resolve({ custom: 'retained' })
+          const response = await responsePromise
+          expect(response.status).toBe(200)
+          expect(render).toHaveBeenCalledOnce()
+        } else {
+          await vi.waitFor(() => expect(result).toBeDefined())
+          if (outcome === 'redirect') {
+            expect(result?.response?.status).toBe(307)
+            expect(result?.response?.headers.get('location')).toBe('/target')
+          } else {
+            expect(result?.error).toBe(reason)
+          }
+          expect(render).not.toHaveBeenCalled()
+          // A later rejected hook no longer owns this terminal request, but
+          // still needs an observer after its result has been abandoned.
+          hookGate.reject(new Error('late hook failure'))
+        }
+        expect(hook).toHaveBeenCalledOnce()
+      } finally {
+        loadGate.resolve()
+        hookGate.resolve({ custom: 'cleanup' })
+        await nestedSettlement
+        await settled
+      }
+    },
+  )
 })
 
 describe('createStartHandler redirect safety', () => {
