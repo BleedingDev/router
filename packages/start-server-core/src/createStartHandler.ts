@@ -840,8 +840,6 @@ export function createStartHandler<TRegister = Register>(
 
           const earlyHints = createEarlyHintsForRequest(requestOpts)
 
-          earlyHints?.collectStatic({ manifest, matchedRoutes })
-
           // The request's stored context, not the resolver's template: RSC
           // adds request assets to it, so read them at call time.
           const storedStartContext = getStartContext({ throwIfNotFound: false })
@@ -854,6 +852,9 @@ export function createStartHandler<TRegister = Register>(
           // `additionalContext` is request-scoped and only read from router.options
           // during load; avoid a full router.update() and redundant location parse.
           routerInstance.options.additionalContext = { serverContext }
+          // Hint callbacks can synchronously load routes, so attach their request
+          // owner and context before notifying application code.
+          earlyHints?.collectStatic({ manifest, matchedRoutes })
           await routerInstance.load({
             _signal: signal,
             _skipLocationUpdate: true,
@@ -865,31 +866,23 @@ export function createStartHandler<TRegister = Register>(
             return normalizeSsrResponse(result.redirect)
           }
 
-          const hadPendingLoads = !!routerInstance._serverLoads
-          if (!hadPendingLoads) {
-            earlyHints?.collectDynamic(
-              _getRenderedMatches(routerInstance.stores.matches.get()),
-            )
-          }
-
           // Pass request-scoped assets to dehydrate for manifest injection
           await routerInstance.serverSsr!.dehydrate({
             requestAssets: storedStartContext?.requestAssets,
             signal,
-            onBeforeDehydrate:
-              hadPendingLoads && earlyHints
-                ? () =>
-                    earlyHints.collectDynamic(
-                      _getRenderedMatches(routerInstance.stores.matches.get()),
-                    )
-                : undefined,
+            onBeforeDehydrate: earlyHints
+              ? () =>
+                  earlyHints.collectDynamic(
+                    _getRenderedMatches(routerInstance.stores.matches.get()),
+                  )
+              : undefined,
           })
           signal.throwIfAborted()
           if (routerInstance._serverResult?.type === 'redirect') {
             return normalizeSsrResponse(routerInstance._serverResult.redirect)
           }
 
-          if (hadPendingLoads || routerInstance._serverResult !== result) {
+          if (routerInstance._serverResult !== result) {
             earlyHints?.collectDynamic(
               _getRenderedMatches(routerInstance.stores.matches.get()),
             )

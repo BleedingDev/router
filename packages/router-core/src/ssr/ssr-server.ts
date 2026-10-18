@@ -30,6 +30,10 @@ import type {
 
 type DehydrationPhase = 'idle' | 'started' | 'disabled'
 
+function hasServerRedirect(router: AnyRouter): boolean {
+  return router._serverResult?.type === 'redirect'
+}
+
 async function waitForServerLoads(
   router: AnyRouter,
   serverSsr: ServerSsr,
@@ -456,22 +460,34 @@ export function attachRouterServerSsrUtils({
       if (cleanupStarted || router.serverSsr !== serverSsr) {
         return
       }
-      const result = router._serverResult
-      if (result?.type === 'redirect') {
+      if (hasServerRedirect(router)) {
         return
       }
       if (opts?.onBeforeDehydrate) {
-        opts.onBeforeDehydrate()
-        if (router._serverLoads || router._serverLoadFailure) {
+        while (true) {
+          opts.onBeforeDehydrate()
+          opts.signal?.throwIfAborted()
+          if (
+            cleanupStarted ||
+            router.serverSsr !== serverSsr ||
+            hasServerRedirect(router)
+          ) {
+            return
+          }
+          if (!router._serverLoads && !router._serverLoadFailure) {
+            break
+          }
+          // Publishing assets can synchronously start another load. Publish its
+          // settled assets before entering a potentially pending custom hook.
           await waitForServerLoads(router, serverSsr, opts.signal)
-        }
-        opts.signal?.throwIfAborted()
-        if (
-          cleanupStarted ||
-          router.serverSsr !== serverSsr ||
-          router._serverResult?.type === 'redirect'
-        ) {
-          return
+          opts.signal?.throwIfAborted()
+          if (
+            cleanupStarted ||
+            router.serverSsr !== serverSsr ||
+            hasServerRedirect(router)
+          ) {
+            return
+          }
         }
       }
       const dehydrate = router.options.dehydrate
@@ -488,7 +504,7 @@ export function attachRouterServerSsrUtils({
       if (cleanupStarted || router.serverSsr !== serverSsr) {
         return
       }
-      if (router._serverResult?.type === 'redirect') {
+      if (hasServerRedirect(router)) {
         return
       }
       let matchesToDehydrate = _getRenderedMatches(router.stores.matches.get())

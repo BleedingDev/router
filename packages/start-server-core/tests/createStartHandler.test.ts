@@ -101,6 +101,15 @@ vi.mock('#tanstack-router-entry', () => ({
   getRouter: () => startMocks.routerFactory?.() ?? startMocks.router,
 }))
 
+vi.mock('tanstack-start-manifest:v', () => ({
+  tsrStartManifest: () => ({
+    clientEntry: '/assets/client.js',
+    routes: {
+      __root__: { preloads: ['/assets/client.js'] },
+    },
+  }),
+}))
+
 vi.mock('../src/server-functions-handler', async (importOriginal) => {
   const actual =
     await importOriginal<typeof import('../src/server-functions-handler')>()
@@ -1214,6 +1223,163 @@ describe('createStartHandler response reconciliation', () => {
 })
 
 describe('createStartHandler early hints', () => {
+  it('retains a caught load failure started by the static hints callback', async () => {
+    const reason = new Error('static hint navigation failed')
+    const callbackEntered = createControlledPromise<void>()
+    let fail = true
+    const router = makeRouter({
+      onEnter: () => {
+        if (fail) {
+          fail = false
+          throw reason
+        }
+      },
+    })
+    const hook = vi.fn(() => ({}))
+    router.update({ dehydrate: hook })
+    startMocks.router = router
+    const render = vi.fn(() => new Response('unexpected HTML'))
+    const staticHrefs: Array<string> = []
+    let caught: unknown
+    let hintLoad: Promise<void> | undefined
+    const responsePromise = createStartHandler(render)(
+      new Request('http://localhost/'),
+      {
+        onEarlyHints: (event) => {
+          if (event.phase === 'static') {
+            staticHrefs.push(...event.hints.map((hint) => hint.href))
+            hintLoad = router.load().catch((error) => {
+              caught = error
+            })
+            callbackEntered.resolve()
+          }
+        },
+      },
+    )
+    const settled = Promise.allSettled([responsePromise])
+    try {
+      await Promise.race([callbackEntered, responsePromise])
+      expect(staticHrefs).toEqual(['/assets/client.js'])
+      expect(hintLoad).toBeDefined()
+      await hintLoad
+      expect(caught).toBe(reason)
+      await expect(responsePromise).rejects.toBe(reason)
+      expect(hook).not.toHaveBeenCalled()
+      expect(render).not.toHaveBeenCalled()
+    } finally {
+      await hintLoad
+      await settled
+    }
+  })
+
+  it.each([false, true])(
+    'publishes every hints-started reload before a blocked custom hook (lifecycle=%s)',
+    async (lifecycle) => {
+      const lifecycleGate = createControlledPromise<string>()
+      const reloadStarted = [
+        createControlledPromise<void>(),
+        createControlledPromise<void>(),
+      ]
+      const reloadGates = [
+        createControlledPromise<string>(),
+        createControlledPromise<string>(),
+      ]
+      const hookStarted = createControlledPromise<void>()
+      const hookGate = createControlledPromise<void>()
+      const hintedHrefs: Array<string> = []
+      const loads: Array<Promise<void>> = []
+      let calls = 0
+      let reentered = false
+      let reloads = 0
+      const router = makeRouter({
+        loader: () => {
+          if (++calls === 1) {
+            return 'initial'
+          }
+          if (lifecycle && calls === 2) {
+            return lifecycleGate
+          }
+          const index = calls - (lifecycle ? 3 : 2)
+          reloadStarted[index]!.resolve()
+          return reloadGates[index]!
+        },
+        head: ({ loaderData }: { loaderData: string }) => ({
+          links: [{ rel: 'preload', href: `/${loaderData}.png`, as: 'image' }],
+        }),
+        onEnter: () => {
+          if (lifecycle && !reentered) {
+            reentered = true
+            loads.push(router.load())
+          }
+        },
+      })
+      const hook = vi.fn(() => {
+        hookStarted.resolve()
+        return hookGate
+      })
+      router.update({ dehydrate: hook })
+      startMocks.router = router
+      const render = vi.fn(
+        ({ responseHeaders }: { responseHeaders: Headers }) =>
+          new Response('ok', { headers: responseHeaders }),
+      )
+      const responsePromise = createStartHandler(render)(
+        new Request('http://localhost/'),
+        {
+          onEarlyHints: (event) => {
+            if (event.phase === 'dynamic') {
+              hintedHrefs.push(...event.hints.map((hint) => hint.href))
+              if (reloads++ < 2) {
+                loads.push(router.load())
+              }
+            }
+          },
+          responseLinkHeader: true,
+        },
+      )
+      const settled = Promise.allSettled([responsePromise])
+      try {
+        lifecycleGate.resolve('lifecycle')
+        await reloadStarted[0]
+        expect(hook).not.toHaveBeenCalled()
+        reloadGates[0]!.resolve('reloaded')
+        await Promise.race([reloadStarted[1], hookStarted])
+        expect(hook).not.toHaveBeenCalled()
+        expect(hintedHrefs).toEqual([
+          lifecycle ? '/lifecycle.png' : '/initial.png',
+          '/reloaded.png',
+        ])
+        reloadGates[1]!.resolve('final')
+        await hookStarted
+        expect(hintedHrefs).toEqual([
+          lifecycle ? '/lifecycle.png' : '/initial.png',
+          '/reloaded.png',
+          '/final.png',
+        ])
+        expect(hook).toHaveBeenCalledOnce()
+        expect(render).not.toHaveBeenCalled()
+        hookGate.resolve()
+        const response = await responsePromise
+        expect(response.status).toBe(200)
+        expect(response.headers.get('Link')).toContain(
+          '</final.png>; rel=preload; as=image',
+        )
+        expect(
+          hintedHrefs.filter((href) => href === '/final.png'),
+        ).toHaveLength(1)
+        expect(hook).toHaveBeenCalledOnce()
+        expect(render).toHaveBeenCalledOnce()
+      } finally {
+        lifecycleGate.resolve('lifecycle')
+        reloadGates[0]!.resolve('reloaded')
+        reloadGates[1]!.resolve('final')
+        hookGate.resolve()
+        await Promise.allSettled(loads)
+        await settled
+      }
+    },
+  )
+
   it('sends route hints before a custom dehydration hook settles', async () => {
     const started = createControlledPromise<void>()
     const gate = createControlledPromise<void>()
