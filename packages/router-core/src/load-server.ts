@@ -900,12 +900,22 @@ type ServerLoadOptions = NonNullable<Parameters<AnyRouter['load']>[0]> & {
   _signal?: AbortSignal
 }
 
+function notifyServerLoadActivity(router: AnyRouter) {
+  const pending = router._serverLoadPromise
+  router._serverLoadPromise = undefined
+  if (pending?.status === 'pending') {
+    pending.resolve()
+  }
+}
+
 export async function loadServerRoute(
   router: AnyRouter,
   opts?: ServerLoadOptions,
 ): Promise<void> {
   const serverSsr = router.serverSsr
   router._serverLoads = (router._serverLoads ?? 0) + 1
+  // Wake dehydration even when this load begins after its custom hook yielded.
+  notifyServerLoadActivity(router)
   try {
     router.stores.status.set('pending')
     if (!opts?._skipLocationUpdate) {
@@ -978,11 +988,7 @@ export async function loadServerRoute(
   } finally {
     if (--router._serverLoads === 0) {
       router.stores.status.set('idle')
-      const pending = router._serverLoadPromise
-      router._serverLoadPromise = undefined
-      if (pending?.status === 'pending') {
-        pending.resolve()
-      }
+      notifyServerLoadActivity(router)
     }
   }
 }

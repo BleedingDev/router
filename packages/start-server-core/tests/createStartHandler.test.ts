@@ -1716,10 +1716,20 @@ describe('createStartHandler early hints', () => {
     expect(router.state).toMatchObject({ status: 'idle', isLoading: false })
   })
 
-  it.each(['redirect', 'failure', 'render'] as const)(
-    'observes a hook-started %s while the hook result remains pending',
-    async (outcome) => {
+  it.each(
+    (['sync', 'microtask', 'await'] as const).flatMap((start) =>
+      (['redirect', 'failure', 'render'] as const).map((outcome) => ({
+        start,
+        outcome,
+      })),
+    ),
+  )(
+    'observes a $start hook-started $outcome while the hook result remains pending',
+    async ({ start, outcome }) => {
+      const hookEntered = createControlledPromise<void>()
+      const hookStartGate = createControlledPromise<void>()
       const started = createControlledPromise<void>()
+      const dynamicHints: Array<Array<string>> = []
       const loadGate = createControlledPromise<void>()
       const hookGate = createControlledPromise<{ custom: string }>()
       const reason = new Error('hook-started lifecycle failed')
@@ -1737,8 +1747,11 @@ describe('createStartHandler early hints', () => {
               throw redirect({ href: '/target', statusCode: 307 })
             }
           }
-          return 'ready'
+          return calls === 1 ? 'initial' : 'final'
         },
+        head: ({ loaderData }: { loaderData: string }) => ({
+          links: [{ rel: 'preload', href: `/${loaderData}.png`, as: 'image' }],
+        }),
         onStay: () => {
           if (outcome === 'failure') {
             throw reason
@@ -1746,15 +1759,30 @@ describe('createStartHandler early hints', () => {
         },
       })
       const hook = vi.fn(() => {
-        nested = router.load()
-        nestedSettlement = Promise.allSettled([nested])
-        return hookGate
+        hookEntered.resolve()
+        const beginLoad = () => {
+          nested = router.load()
+          nestedSettlement = Promise.allSettled([nested])
+          return hookGate
+        }
+        if (start === 'sync') {
+          return beginLoad()
+        }
+        return (start === 'microtask' ? Promise.resolve() : hookStartGate).then(
+          beginLoad,
+        )
       })
       router.update({ dehydrate: hook })
       startMocks.router = router
       const render = vi.fn(() => new Response('ok'))
       const responsePromise = Promise.resolve(
-        createStartHandler(render)(new Request('http://localhost/'), {}),
+        createStartHandler(render)(new Request('http://localhost/'), {
+          onEarlyHints: (event) => {
+            if (event.phase === 'dynamic') {
+              dynamicHints.push(event.hints.map((hint) => hint.href))
+            }
+          },
+        }),
       )
       let result:
         | { response: Response; error?: never }
@@ -1769,12 +1797,17 @@ describe('createStartHandler early hints', () => {
         },
       )
       try {
+        await hookEntered
+        hookStartGate.resolve()
         await started
         expect(hook).toHaveBeenCalledOnce()
         expect(render).not.toHaveBeenCalled()
         loadGate.resolve()
         await nestedSettlement
         if (outcome === 'render') {
+          await vi.waitFor(() =>
+            expect(dynamicHints).toEqual([['/initial.png'], ['/final.png']]),
+          )
           expect(result).toBeUndefined()
           expect(render).not.toHaveBeenCalled()
           hookGate.resolve({ custom: 'retained' })
@@ -1796,6 +1829,7 @@ describe('createStartHandler early hints', () => {
         }
         expect(hook).toHaveBeenCalledOnce()
       } finally {
+        hookStartGate.resolve()
         loadGate.resolve()
         hookGate.resolve({ custom: 'cleanup' })
         await nestedSettlement

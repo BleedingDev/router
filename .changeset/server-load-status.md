@@ -7,7 +7,7 @@ Keep server routers pending until every active load settles, including same-URL 
 
 Wait for active server loads before capturing hydration state and honor redirects that complete during that wait.
 
-Observe loads started synchronously by custom dehydration before awaiting the hook result, so a redirect or load failure cannot be blocked by an unrelated pending hook promise.
+Observe loads started while custom dehydration remains pending, including after the hook yields, so an unrelated hook promise cannot block redirects, load failures, or settled route hints.
 
 Fail SSR when any active server load throws, including a lifecycle-started load whose returned promise the application catches. Preserve early hints before custom dehydration hooks; a hook-started load may emit additional hints, and a later redirect cannot retract hints already sent.
 

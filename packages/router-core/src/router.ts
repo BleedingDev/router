@@ -1120,7 +1120,7 @@ export interface RouterCore<
   _serverResult?: ServerLoadResult
   /** Server loads retain pending status until every active load has settled. */
   _serverLoads?: number
-  /** Allocated only when SSR needs to wait for active server loads. */
+  /** Request-scoped wakeup for server load activity during dehydration. */
   _serverLoadPromise?: ControlledPromise<void>
   /** First thrown load failure in the attached SSR request, until cleanup. */
   _serverLoadFailure?: { cause: unknown }

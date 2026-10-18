@@ -491,28 +491,77 @@ export function attachRouterServerSsrUtils({
         }
       }
       const dehydrate = router.options.dehydrate
-      let hookResult = dehydrate?.call(router.options)
-      if (router._serverLoads || router._serverLoadFailure) {
-        // The hook may return unrelated pending work after starting a load.
-        // Observe its result now, but let a terminal load finish the request
-        // without waiting for that work. Reuse this promise for thenables.
-        hookResult = Promise.resolve(hookResult)
-        void hookResult.catch(() => {})
-        await waitForServerLoads(router, serverSsr, opts?.signal)
-        opts?.signal?.throwIfAborted()
-        if (
-          cleanupStarted ||
-          router.serverSsr !== serverSsr ||
-          hasServerRedirect(router)
-        ) {
-          return
+      let dehydratedData: unknown
+      if (dehydrate) {
+        let publishedResult = router._serverResult
+        let hookResult: { value: unknown } | { error: unknown } | undefined
+        let wakeHook: (() => void) | undefined
+        let pending: AnyRouter['_serverLoadPromise']
+        // Observe the hook once. A never-settling hook must not retain one
+        // Promise.race handler for every load started during this request.
+        void Promise.resolve(dehydrate.call(router.options)).then(
+          (value) => {
+            hookResult = { value }
+            wakeHook?.()
+          },
+          (error) => {
+            hookResult = { error }
+            wakeHook?.()
+          },
+        )
+        try {
+          while (true) {
+            opts?.signal?.throwIfAborted()
+            if (cleanupStarted || router.serverSsr !== serverSsr) {
+              return
+            }
+            if (router._serverLoads || router._serverLoadFailure) {
+              await waitForServerLoads(router, serverSsr, opts?.signal)
+              continue
+            }
+            if (hasServerRedirect(router)) {
+              return
+            }
+            if (!hookResult && publishedResult !== router._serverResult) {
+              publishedResult = router._serverResult
+              opts?.onBeforeDehydrate?.()
+              continue
+            }
+            if (hookResult) {
+              if ('error' in hookResult) {
+                throw hookResult.error
+              }
+              dehydratedData = hookResult.value
+              break
+            }
+            const activity = (router._serverLoadPromise ??=
+              createControlledPromise<void>())
+            pending = activity
+            wakeHook = () => {
+              if (router._serverLoadPromise === activity) {
+                router._serverLoadPromise = undefined
+              }
+              if (activity.status === 'pending') {
+                activity.resolve()
+              }
+            }
+            if (opts?.signal) {
+              await waitForReason(activity, opts.signal)
+            } else {
+              await activity
+            }
+            wakeHook = undefined
+          }
+        } finally {
+          wakeHook = undefined
+          if (pending && router._serverLoadPromise === pending) {
+            router._serverLoadPromise = undefined
+            if (pending.status === 'pending') {
+              pending.resolve()
+            }
+          }
         }
       }
-      const dehydratedData = dehydrate
-        ? opts?.signal
-          ? await waitForReason(hookResult, opts.signal)
-          : await hookResult
-        : undefined
       // A custom hook can start a load. Capture matches only after it settles.
       if (router._serverLoads || router._serverLoadFailure) {
         await waitForServerLoads(router, serverSsr, opts?.signal)
