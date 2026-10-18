@@ -432,6 +432,7 @@ export function attachRouterServerSsrUtils({
     dehydrate: async (opts?: {
       requestAssets?: ManifestRouteAssets
       signal?: AbortSignal
+      onBeforeDehydrate?: () => void
     }) => {
       // Guard synchronously before the first await: a concurrent second call
       // would double-serialize and corrupt the hydration payload.
@@ -458,6 +459,17 @@ export function attachRouterServerSsrUtils({
       const result = router._serverResult
       if (result?.type === 'redirect') {
         return
+      }
+      if (opts?.onBeforeDehydrate) {
+        opts.onBeforeDehydrate()
+        opts.signal?.throwIfAborted()
+        if (
+          cleanupStarted ||
+          router.serverSsr !== serverSsr ||
+          router._serverResult?.type === 'redirect'
+        ) {
+          return
+        }
       }
       const dehydrate = router.options.dehydrate
       const dehydratedData = dehydrate

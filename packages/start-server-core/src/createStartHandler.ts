@@ -876,6 +876,13 @@ export function createStartHandler<TRegister = Register>(
           await routerInstance.serverSsr!.dehydrate({
             requestAssets: storedStartContext?.requestAssets,
             signal,
+            onBeforeDehydrate:
+              hadPendingLoads && earlyHints
+                ? () =>
+                    earlyHints.collectDynamic(
+                      _getRenderedMatches(routerInstance.stores.matches.get()),
+                    )
+                : undefined,
           })
           signal.throwIfAborted()
           if (routerInstance._serverResult?.type === 'redirect') {

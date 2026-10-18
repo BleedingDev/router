@@ -880,6 +880,8 @@ export interface ServerSsr {
   dehydrate: (opts?: {
     requestAssets?: ManifestRouteAssets
     signal?: AbortSignal
+    /** Framework-only: publish settled route assets before the custom hook. */
+    onBeforeDehydrate?: () => void
   }) => Promise<void>
   /**
    * Framework-only: opt this request out of hydration output entirely (for
