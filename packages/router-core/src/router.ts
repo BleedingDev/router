@@ -2271,9 +2271,9 @@ export class RouterCore<
 
     let historyAction: HistoryAction | undefined
     const isSameLocation =
+      trimPathRight(this.latestLocation.href) === trimPathRight(next.href) &&
       (this.latestLocation.maskedLocation ?? this.latestLocation).publicHref ===
         nextLocation.publicHref &&
-      trimPathRight(this.latestLocation.href) === trimPathRight(next.href) &&
       deepEqual(
         _getUserHistoryState(next.state),
         _getUserHistoryState(this.latestLocation.state),
