@@ -20,6 +20,10 @@ import {
   withConsumerDirectory,
   withDependencyRenewal,
 } from './accept-router-core-package.mjs'
+import {
+  validateStartReleaseRun,
+  validateStartReleaseArtifact,
+} from './start-release-validators.mjs'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const workflow = '.github/workflows/start-package-qualification.yml'
@@ -108,8 +112,6 @@ export async function parent(tag, expectedName, expectedVersion) {
   assert.match(manifest.sourceSha, /^[a-f0-9]{40}$/)
   const { validateCoreReleaseRun, validateCoreReleaseArtifact } =
     await import('./ultramodern-core-release.mjs')
-  const { validateStartReleaseRun, validateStartReleaseArtifact } =
-    await import('./ultramodern-start-release.mjs')
   const isCore = expectedName === '@tanstack/router-core'
   const acceptedRun = await api(`actions/runs/${manifest.runId}`)
   assert.equal(String(acceptedRun.id), String(manifest.runId))

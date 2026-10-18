@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   compareRegistryPayload,
   registryPayload,
@@ -710,6 +711,95 @@ test('registry and workspace manifests cannot hide consumer lifecycle hooks or m
         /Package scripts must/,
       )
     }
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('qualification CLI reaches authenticated parent validation without an unsettled module cycle', () => {
+  const temporaryRoot = process.env.RUNNER_TEMP ?? process.env.OWNED_TEMP_DIR
+  assert(
+    temporaryRoot,
+    'Run CLI fixture under an operation-owned temporary root',
+  )
+  const directory = mkdtempSync(path.join(temporaryRoot, 'start-cli-'))
+  try {
+    const sourceSha = 'a'.repeat(40)
+    const tag = `ultramodern-router-core-${sourceSha.slice(0, 12)}`
+    const manifest = {
+      repository: 'BleedingDev/router',
+      contract: 'router-core-package-v1',
+      sourceSha,
+      ref: 'refs/heads/main',
+      runId: '456',
+      package: { name: '@tanstack/router-core', version: '1.171.38' },
+    }
+    const manifestBytes = JSON.stringify(manifest)
+    const manifestUrl = `https://github.com/BleedingDev/router/releases/download/${tag}/core-package.json`
+    const api = 'https://api.github.com/repos/BleedingDev/router/'
+    const responses = {
+      [`${api}releases/tags/${tag}`]: {
+        tag_name: tag,
+        draft: false,
+        immutable: true,
+        target_commitish: sourceSha,
+        assets: [
+          {
+            name: 'core-package.json',
+            browser_download_url: manifestUrl,
+            digest: `sha256:${createHash('sha256').update(manifestBytes).digest('hex')}`,
+          },
+        ],
+      },
+      [manifestUrl]: manifest,
+      [`${api}git/matching-refs/tags/${tag}`]: [
+        {
+          ref: `refs/tags/${tag}`,
+          object: { type: 'commit', sha: sourceSha },
+        },
+      ],
+    }
+    const preload = path.join(directory, 'fetch-fixture.mjs')
+    writeFileSync(
+      preload,
+      `
+      import assert from 'node:assert/strict';
+      const responses = ${JSON.stringify(responses)};
+      globalThis.fetch = async (url) => {
+        if (url === ${JSON.stringify(`${api}actions/runs/456`)}) {
+          throw new Error('Reached authenticated parent run validation');
+        }
+        assert(Object.hasOwn(responses, url), 'Unexpected fixture request: ' + url);
+        return new Response(JSON.stringify(responses[url]));
+      };
+    `,
+    )
+    const parents = path.join(directory, 'parents.json')
+    writeFileSync(parents, JSON.stringify({ core: tag }))
+    const result = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        preload,
+        fileURLToPath(new URL('./qualify-start-package.mjs', import.meta.url)),
+        'storage',
+        path.join(directory, 'output'),
+        parents,
+      ],
+      {
+        encoding: 'utf8',
+        timeout: 15000,
+        env: {
+          ...process.env,
+          GITHUB_ACTIONS: 'false',
+          GH_TOKEN: 'fixture-token',
+          OWNED_TEMP_DIR: directory,
+        },
+      },
+    )
+    assert.equal(result.error, undefined)
+    assert.equal(result.status, 1, result.stderr)
+    assert.match(result.stderr, /Reached authenticated parent run validation/)
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
