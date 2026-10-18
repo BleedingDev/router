@@ -82,6 +82,20 @@ function consumerTypeScriptConfiguration(extension) {
   }
 }
 
+export function browserConsumerTypeScriptConfiguration() {
+  const configuration = consumerTypeScriptConfiguration('mts')
+  return {
+    ...configuration,
+    compilerOptions: {
+      ...configuration.compilerOptions,
+      module: 'ESNext',
+      moduleResolution: 'Bundler',
+      types: [],
+    },
+    files: ['consumer.browser.mts'],
+  }
+}
+
 export function withDependencyRenewal(operation, renew) {
   let failed = false
   let failure
@@ -495,8 +509,27 @@ export function acceptCorePackage(archive) {
       )
       run(process.execPath, [compiler, '--project', configuration])
     }
+    writeFileSync(
+      path.join(directory, 'consumer.browser.mts'),
+      `import * as client from '@tanstack/router-core/ssr/client';
+const headers: Headers = client.mergeHeaders({
+  'content-length': 123,
+  'set-cookie': ['first=1', 'second=2'],
+  'x-value': 'value',
+  'x-absent': undefined,
+});
+void headers;
+// @ts-expect-error Boolean values are not outgoing HTTP header values.
+client.mergeHeaders({ 'x-invalid': true });
+`,
+    )
+    writeFileSync(
+      path.join(directory, 'tsconfig.browser.json'),
+      JSON.stringify(browserConsumerTypeScriptConfiguration()),
+    )
+    run(process.execPath, [compiler, '--project', 'tsconfig.browser.json'])
     console.log(
-      `Accepted installed ESM/CJS declarations and exports: ${packed.name}@${packed.version}`,
+      `Accepted installed ESM/CJS and browser declarations and exports: ${packed.name}@${packed.version}`,
     )
   })
 }
