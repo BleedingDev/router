@@ -1,4 +1,3 @@
-import { Readable } from 'node:stream'
 import {
   DOCUMENT_CLOSE_ANCHOR_INDEX,
   DOCUMENT_CLOSE_BYTES,
@@ -14,7 +13,6 @@ import {
   HYDRATION_SCRIPT_BOUNDARY_BYTES,
   HydrationScriptOutputState,
 } from './hydrationScripts'
-import type { ReadableStream as NodeReadableStream } from 'node:stream/web'
 import type { AnyRouter } from '../router'
 import type { ByteMatcherState } from './htmlBoundaryScanner'
 import type { HydrationScriptOutput } from './hydrationScripts'
@@ -42,25 +40,9 @@ export type TransformStreamWithRouterOptions = {
 }
 
 type AppStreamValue = Uint8Array | string
-/** Renderer output: UTF-8 bytes, or string records from a Node pipeable. */
-type AppStream =
-  | ReadableStream<Uint8Array>
-  | ReadableStream<string>
-  | ReadableStream<AppStreamValue>
-  | NodeReadableStream<AppStreamValue>
-
-export function transformPipeableStreamWithRouter(
-  router: AnyRouter,
-  routerStream: Readable,
-  opts?: TransformStreamWithRouterOptions,
-) {
-  return Readable.fromWeb(
-    transformReadableStreamWithRouter(
-      router,
-      Readable.toWeb(routerStream) as AppStream,
-      opts,
-    ) as NodeReadableStream<Uint8Array>,
-  )
+/** The default-reader contract shared by Web and Node Web streams. */
+type AppStream = {
+  getReader(): ReadableStreamDefaultReader<AppStreamValue>
 }
 
 export async function transformHtmlStringWithRouter(
@@ -330,7 +312,7 @@ export function transformReadableStreamWithRouter(
 
   let reader: AppStreamReader
   try {
-    reader = appStream.getReader() as AppStreamReader
+    reader = appStream.getReader()
   } catch (error) {
     cleanupFailedStreamCreation(serverSsr, opts?.onAbort, error)
     throw error

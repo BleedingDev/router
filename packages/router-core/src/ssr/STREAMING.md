@@ -3,6 +3,24 @@
 This document explains how TanStack Router adds hydration scripts to server-rendered HTML.
 It describes the transport in `router-core` and the React, Solid, and Vue adapters.
 
+## Server entries
+
+`@tanstack/router-core/ssr/server` exposes the Web stream and HTML transforms.
+Its Node condition also exposes `transformPipeableStreamWithRouter`.
+Bundlers targeting Node can select the explicit `@tanstack/router-core/ssr/server.node` entry.
+Browser and Worker conditions use the portable entry and do not require Node stream types.
+
+`@tanstack/start-server-core` follows the same condition contract.
+Its explicit Node entry is `@tanstack/start-server-core/node`.
+The React, Solid and Vue Start server entries re-export this platform-selected API.
+
+Node TypeScript consumers select NodeNext resolution, or Bundler resolution with
+`customConditions: ['node']`, to import `transformPipeableStreamWithRouter` through these server entries.
+Bundler resolution without a Node condition selects the portable Web API.
+Direct consumers can also use the explicit Node entries above.
+Worker projects use Bundler resolution with their Worker condition; NodeNext adds
+the Node condition automatically unless a Worker condition takes precedence.
+
 ## Main terms
 
 The renderer and Seroval produce output independently.

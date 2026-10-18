@@ -60,6 +60,8 @@ jobs:
         uses: TanStack/config/.github/setup@e4b48f16568324f76f467aa4c2aac2f05db632c3 # main
       - name: Build Packages
         run: pnpm run build:all
+      - name: Check SSR platform entries
+        run: node --test scripts/ssr-entrypoints.test.mjs
       - name: Publish Previews
         run: pnpx pkg-pr-new publish --pnpm './packages/*' --template './examples/*/*'
   version-preview:
