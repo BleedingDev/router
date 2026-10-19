@@ -5,7 +5,7 @@ import {
   createInlineCssStyleAsset,
   getStylesheetHref,
 } from '../manifest'
-import { decodePath } from '../utils'
+import { createControlledPromise, decodePath } from '../utils'
 import { createSieveCache } from '../sieve-cache'
 import { rootRouteId } from '../root'
 import { _getRenderedMatches } from '../load-client'
@@ -29,6 +29,32 @@ import type {
 } from '../manifest'
 
 type DehydrationPhase = 'idle' | 'started' | 'disabled'
+
+function hasServerRedirect(router: AnyRouter): boolean {
+  return router._serverResult?.type === 'redirect'
+}
+
+async function waitForServerLoads(
+  router: AnyRouter,
+  serverSsr: ServerSsr,
+  signal?: AbortSignal,
+) {
+  while (router.serverSsr === serverSsr) {
+    if (router._serverLoadFailure) {
+      throw router._serverLoadFailure.cause
+    }
+    if (!router._serverLoads) {
+      return
+    }
+    const pending = (router._serverLoadPromise ??=
+      createControlledPromise<void>())
+    if (signal) {
+      await waitForReason(pending, signal)
+    } else {
+      await pending
+    }
+  }
+}
 
 export function dehydrateMatch(match: AnyRouteMatch): DehydratedMatch {
   const dehydratedMatch: DehydratedMatch = {
@@ -410,6 +436,7 @@ export function attachRouterServerSsrUtils({
     dehydrate: async (opts?: {
       requestAssets?: ManifestRouteAssets
       signal?: AbortSignal
+      onBeforeDehydrate?: () => void
     }) => {
       // Guard synchronously before the first await: a concurrent second call
       // would double-serialize and corrupt the hydration payload.
@@ -426,6 +453,126 @@ export function attachRouterServerSsrUtils({
       }
       opts?.signal?.throwIfAborted()
       dehydrationPhase = 'started'
+      if (router._serverLoads || router._serverLoadFailure) {
+        await waitForServerLoads(router, serverSsr, opts?.signal)
+      }
+      opts?.signal?.throwIfAborted()
+      if (cleanupStarted || router.serverSsr !== serverSsr) {
+        return
+      }
+      if (hasServerRedirect(router)) {
+        return
+      }
+      if (opts?.onBeforeDehydrate) {
+        while (true) {
+          opts.onBeforeDehydrate()
+          opts.signal?.throwIfAborted()
+          if (
+            cleanupStarted ||
+            router.serverSsr !== serverSsr ||
+            hasServerRedirect(router)
+          ) {
+            return
+          }
+          if (!router._serverLoads && !router._serverLoadFailure) {
+            break
+          }
+          // Publishing assets can synchronously start another load. Publish its
+          // settled assets before entering a potentially pending custom hook.
+          await waitForServerLoads(router, serverSsr, opts.signal)
+          opts.signal?.throwIfAborted()
+          if (
+            cleanupStarted ||
+            router.serverSsr !== serverSsr ||
+            hasServerRedirect(router)
+          ) {
+            return
+          }
+        }
+      }
+      const dehydrate = router.options.dehydrate
+      let dehydratedData: unknown
+      if (dehydrate) {
+        let publishedResult = router._serverResult
+        let hookResult: { value: unknown } | { error: unknown } | undefined
+        let wakeHook: (() => void) | undefined
+        let pending: AnyRouter['_serverLoadPromise']
+        // Observe the hook once. A never-settling hook must not retain one
+        // Promise.race handler for every load started during this request.
+        void Promise.resolve(dehydrate.call(router.options)).then(
+          (value) => {
+            hookResult = { value }
+            wakeHook?.()
+          },
+          (error) => {
+            hookResult = { error }
+            wakeHook?.()
+          },
+        )
+        try {
+          while (true) {
+            opts?.signal?.throwIfAborted()
+            if (cleanupStarted || router.serverSsr !== serverSsr) {
+              return
+            }
+            if (router._serverLoads || router._serverLoadFailure) {
+              await waitForServerLoads(router, serverSsr, opts?.signal)
+              continue
+            }
+            if (hasServerRedirect(router)) {
+              return
+            }
+            if (!hookResult && publishedResult !== router._serverResult) {
+              publishedResult = router._serverResult
+              opts?.onBeforeDehydrate?.()
+              continue
+            }
+            if (hookResult) {
+              if ('error' in hookResult) {
+                throw hookResult.error
+              }
+              dehydratedData = hookResult.value
+              break
+            }
+            const activity = (router._serverLoadPromise ??=
+              createControlledPromise<void>())
+            pending = activity
+            wakeHook = () => {
+              if (router._serverLoadPromise === activity) {
+                router._serverLoadPromise = undefined
+              }
+              if (activity.status === 'pending') {
+                activity.resolve()
+              }
+            }
+            if (opts?.signal) {
+              await waitForReason(activity, opts.signal)
+            } else {
+              await activity
+            }
+            wakeHook = undefined
+          }
+        } finally {
+          wakeHook = undefined
+          if (pending && router._serverLoadPromise === pending) {
+            router._serverLoadPromise = undefined
+            if (pending.status === 'pending') {
+              pending.resolve()
+            }
+          }
+        }
+      }
+      // A custom hook can start a load. Capture matches only after it settles.
+      if (router._serverLoads || router._serverLoadFailure) {
+        await waitForServerLoads(router, serverSsr, opts?.signal)
+      }
+      opts?.signal?.throwIfAborted()
+      if (cleanupStarted || router.serverSsr !== serverSsr) {
+        return
+      }
+      if (hasServerRedirect(router)) {
+        return
+      }
       let matchesToDehydrate = _getRenderedMatches(router.stores.matches.get())
       const isShell = router.isShell()
       if (isShell) {
@@ -457,16 +604,6 @@ export function attachRouterServerSsrUtils({
       const dehydratedRouter: DehydratedRouter = {
         manifest: manifestToDehydrate,
         matches,
-      }
-      const dehydrate = router.options.dehydrate
-      const dehydratedData = dehydrate
-        ? opts?.signal
-          ? await waitForReason(dehydrate.call(router.options), opts.signal)
-          : await dehydrate.call(router.options)
-        : undefined
-      opts?.signal?.throwIfAborted()
-      if (cleanupStarted) {
-        return
       }
       if (dehydratedData !== undefined) {
         dehydratedRouter.dehydratedData = dehydratedData
@@ -630,12 +767,26 @@ export function attachRouterServerSsrUtils({
         settled,
       )
       renderFinishedListeners.length = 0
-      router.ssr = undefined
-      router.serverSsr = undefined
+      if (router.serverSsr === serverSsr) {
+        router.ssr = undefined
+        router.serverSsr = undefined
+        router._serverLoadFailure = undefined
+        const pending = router._serverLoadPromise
+        router._serverLoadPromise = undefined
+        if (pending?.status === 'pending') {
+          pending.resolve()
+        }
+      }
     },
   }
 
+  const pending = router._serverLoadPromise
+  router._serverLoadPromise = undefined
+  router._serverLoadFailure = undefined
   router.serverSsr = serverSsr
+  if (pending?.status === 'pending') {
+    pending.resolve()
+  }
   for (const listener of router.serverSsrLifecycle?.onServerSsrAttach ?? []) {
     try {
       listener(serverSsr)

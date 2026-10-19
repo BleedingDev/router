@@ -53,9 +53,39 @@
   "types": "dist/esm/index.d.ts",
   "exports": {
     ".": {
+      "browser": {
+        "import": {
+          "types": "./dist/esm/index.d.ts",
+          "default": "./dist/esm/index.js"
+        }
+      },
+      "workerd": {
+        "import": {
+          "types": "./dist/esm/index.d.ts",
+          "default": "./dist/esm/index.js"
+        }
+      },
+      "worker": {
+        "import": {
+          "types": "./dist/esm/index.d.ts",
+          "default": "./dist/esm/index.js"
+        }
+      },
+      "node": {
+        "import": {
+          "types": "./dist/esm/index.node.d.ts",
+          "default": "./dist/esm/index.node.js"
+        }
+      },
       "import": {
         "types": "./dist/esm/index.d.ts",
         "default": "./dist/esm/index.js"
+      }
+    },
+    "./node": {
+      "import": {
+        "types": "./dist/esm/index.node.d.ts",
+        "default": "./dist/esm/index.node.js"
       }
     },
     "./createServerRpc": {

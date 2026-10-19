@@ -82,6 +82,20 @@ function consumerTypeScriptConfiguration(extension) {
   }
 }
 
+export function browserConsumerTypeScriptConfiguration() {
+  const configuration = consumerTypeScriptConfiguration('mts')
+  return {
+    ...configuration,
+    compilerOptions: {
+      ...configuration.compilerOptions,
+      module: 'ESNext',
+      moduleResolution: 'Bundler',
+      types: [],
+    },
+    files: ['consumer.browser.mts'],
+  }
+}
+
 export function withDependencyRenewal(operation, renew) {
   let failed = false
   let failure
@@ -420,6 +434,7 @@ export function acceptCorePackage(archive) {
     const imports = [
       '@tanstack/router-core',
       '@tanstack/router-core/ssr/server',
+      '@tanstack/router-core/ssr/server.node',
       '@tanstack/router-core/ssr/client',
       '@tanstack/router-core/isServer',
       '@tanstack/router-core/scroll-restoration-script',
@@ -485,7 +500,12 @@ export function acceptCorePackage(archive) {
         (specifier, index) =>
           `import * as api${index} from ${JSON.stringify(specifier)}; void api${index};`,
       )
-      .join('\n')}\n`
+      .join('\n')}\nimport { Readable } from 'node:stream';
+import { transformPipeableStreamWithRouter } from '@tanstack/router-core/ssr/server.node';
+declare const router: import('@tanstack/router-core').AnyRouter;
+const pipeable: Readable = transformPipeableStreamWithRouter(router, Readable.from(['<html></html>']));
+void pipeable;
+`
     for (const extension of ['mts', 'cts']) {
       writeFileSync(path.join(directory, `consumer.${extension}`), source)
       const configuration = `tsconfig.${extension}.json`
@@ -495,8 +515,49 @@ export function acceptCorePackage(archive) {
       )
       run(process.execPath, [compiler, '--project', configuration])
     }
+    writeFileSync(
+      path.join(directory, 'consumer.browser.mts'),
+      `import * as client from '@tanstack/router-core/ssr/client';
+import * as server from '@tanstack/router-core/ssr/server';
+declare const router: import('@tanstack/router-core').AnyRouter;
+const output: ReadableStream<Uint8Array> = server.transformReadableStreamWithRouter(router, new ReadableStream<string>());
+void output;
+const headers: Headers = client.mergeHeaders({
+  'content-length': 123,
+  'set-cookie': ['first=1', 'second=2'],
+  'x-value': 'value',
+  'x-absent': undefined,
+});
+void headers;
+// @ts-expect-error Boolean values are not outgoing HTTP header values.
+client.mergeHeaders({ 'x-invalid': true });
+`,
+    )
+    writeFileSync(
+      path.join(directory, 'tsconfig.browser.json'),
+      JSON.stringify(browserConsumerTypeScriptConfiguration()),
+    )
+    run(process.execPath, [compiler, '--project', 'tsconfig.browser.json'])
+    for (const conditions of [[], ['browser'], ['workerd'], ['worker']]) {
+      const node = conditions.length === 0
+      for (const format of ['module', 'commonjs']) {
+        const specifier = '@tanstack/router-core/ssr/server'
+        const source =
+          format === 'module'
+            ? `import * as api from '${specifier}'; const resolved = import.meta.resolve('${specifier}');`
+            : `const api = require('${specifier}'); const resolved = require.resolve('${specifier}').replaceAll('\\\\', '/');`
+        const target = node ? 'server.node' : 'server'
+        const extension = format === 'module' ? 'js' : 'cjs'
+        run(process.execPath, [
+          ...conditions.map((condition) => `--conditions=${condition}`),
+          `--input-type=${format}`,
+          '--eval',
+          `${source} if (!resolved.endsWith('/ssr/${target}.${extension}')) throw new Error('Incorrect SSR server export'); if (${node} && typeof api.transformPipeableStreamWithRouter !== 'function') throw new Error('Node pipeable adapter is unavailable'); if (typeof api.transformReadableStreamWithRouter !== 'function') throw new Error('Web transform is unavailable');`,
+        ])
+      }
+    }
     console.log(
-      `Accepted installed ESM/CJS declarations and exports: ${packed.name}@${packed.version}`,
+      `Accepted installed ESM/CJS and browser declarations and exports: ${packed.name}@${packed.version}`,
     )
   })
 }
