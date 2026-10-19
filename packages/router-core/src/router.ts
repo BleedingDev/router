@@ -81,6 +81,7 @@ import type {
 import type {
   Awaitable,
   Constrain,
+  ControlledPromise,
   NoInfer,
   NonNullableUpdater,
   PickAsRequired,
@@ -879,6 +880,8 @@ export interface ServerSsr {
   dehydrate: (opts?: {
     requestAssets?: ManifestRouteAssets
     signal?: AbortSignal
+    /** Framework-only: publish settled route assets before the custom hook. */
+    onBeforeDehydrate?: () => void
   }) => Promise<void>
   /**
    * Framework-only: opt this request out of hydration output entirely (for
@@ -1115,6 +1118,12 @@ export interface RouterCore<
   _pending?: PendingSession
   /** Result of the latest server load, used to render or redirect. */
   _serverResult?: ServerLoadResult
+  /** Server loads retain pending status until every active load has settled. */
+  _serverLoads?: number
+  /** Request-scoped wakeup for server load activity during dehydration. */
+  _serverLoadPromise?: ControlledPromise<void>
+  /** First thrown load failure in the attached SSR request, until cleanup. */
+  _serverLoadFailure?: { cause: unknown }
   /** Framework publication waiting for an exact render acknowledgement. */
   _rendered?: [
     offered?: Array<AnyRouteMatch>,
@@ -1166,8 +1175,6 @@ export class RouterCore<
   _cache = new Map<string, AnyRouteMatch>()
   /** Accepted semantic lane, excluding temporary pending presentation. */
   _committed: Array<AnyRouteMatch> = []
-  /** Server loads retain pending status until every active load has settled. */
-  _serverLoads = 0
 
   // Must build in constructor
   stores!: RouterStores<TRouteTree>
@@ -2265,6 +2272,8 @@ export class RouterCore<
     let historyAction: HistoryAction | undefined
     const isSameLocation =
       trimPathRight(this.latestLocation.href) === trimPathRight(next.href) &&
+      (this.latestLocation.maskedLocation ?? this.latestLocation).publicHref ===
+        nextLocation.publicHref &&
       deepEqual(
         _getUserHistoryState(next.state),
         _getUserHistoryState(this.latestLocation.state),

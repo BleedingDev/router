@@ -60,6 +60,46 @@
       }
     },
     "./ssr/server": {
+      "browser": {
+        "import": {
+          "types": "./dist/esm/ssr/server.d.ts",
+          "default": "./dist/esm/ssr/server.js"
+        },
+        "require": {
+          "types": "./dist/cjs/ssr/server.d.cts",
+          "default": "./dist/cjs/ssr/server.cjs"
+        }
+      },
+      "workerd": {
+        "import": {
+          "types": "./dist/esm/ssr/server.d.ts",
+          "default": "./dist/esm/ssr/server.js"
+        },
+        "require": {
+          "types": "./dist/cjs/ssr/server.d.cts",
+          "default": "./dist/cjs/ssr/server.cjs"
+        }
+      },
+      "worker": {
+        "import": {
+          "types": "./dist/esm/ssr/server.d.ts",
+          "default": "./dist/esm/ssr/server.js"
+        },
+        "require": {
+          "types": "./dist/cjs/ssr/server.d.cts",
+          "default": "./dist/cjs/ssr/server.cjs"
+        }
+      },
+      "node": {
+        "import": {
+          "types": "./dist/esm/ssr/server.node.d.ts",
+          "default": "./dist/esm/ssr/server.node.js"
+        },
+        "require": {
+          "types": "./dist/cjs/ssr/server.node.d.cts",
+          "default": "./dist/cjs/ssr/server.node.cjs"
+        }
+      },
       "import": {
         "types": "./dist/esm/ssr/server.d.ts",
         "default": "./dist/esm/ssr/server.js"
@@ -67,6 +107,16 @@
       "require": {
         "types": "./dist/cjs/ssr/server.d.cts",
         "default": "./dist/cjs/ssr/server.cjs"
+      }
+    },
+    "./ssr/server.node": {
+      "import": {
+        "types": "./dist/esm/ssr/server.node.d.ts",
+        "default": "./dist/esm/ssr/server.node.js"
+      },
+      "require": {
+        "types": "./dist/cjs/ssr/server.node.d.cts",
+        "default": "./dist/cjs/ssr/server.node.cjs"
       }
     },
     "./ssr/client": {

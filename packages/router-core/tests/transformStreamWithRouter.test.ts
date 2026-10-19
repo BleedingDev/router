@@ -21,9 +21,9 @@ import {
 import { attachRouterServerSsrUtils } from '../src/ssr/ssr-server'
 import {
   transformHtmlStringWithRouter,
-  transformPipeableStreamWithRouter,
   transformReadableStreamWithRouter,
 } from '../src/ssr/transformStreamWithRouter'
+import { transformPipeableStreamWithRouter } from '../src/ssr/server.node'
 import {
   DOCUMENT_CLOSE_BYTES,
   SCRIPT_CLOSE,

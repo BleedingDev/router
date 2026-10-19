@@ -9,6 +9,7 @@ concurrency:
 
 env:
   NX_CLOUD_ACCESS_TOKEN: ${{ secrets.NX_CLOUD_ACCESS_TOKEN }}
+  NX_NO_CLOUD: ${{ github.repository != 'TanStack/router' }}
   SERVER_PRESET: 'node-server'
 
 permissions:
@@ -27,9 +28,13 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Start Nx Agents
+        if: ${{ github.repository == 'TanStack/router' }}
         run: npx nx-cloud start-ci-run --distribute-on=".nx/workflows/dynamic-changesets.yaml"
       - name: Setup Tools
         uses: TanStack/config/.github/setup@e4b48f16568324f76f467aa4c2aac2f05db632c3 # main
+      - name: Install Playwright Chromium
+        if: ${{ github.repository != 'TanStack/router' }}
+        run: pnpm exec playwright install --with-deps chromium
       - name: Get base and head commits for `nx affected`
         uses: nrwl/nx-set-shas@afb73a62d26e41464e9254689e1fd6122ee683c1 # v5.0.1
         with:
@@ -37,7 +42,7 @@ jobs:
       - name: Run Checks
         run: pnpm run test:pr --parallel=3
       - name: Stop Nx Agents
-        if: ${{ always() }}
+        if: ${{ always() && github.repository == 'TanStack/router' }}
         run: npx nx-cloud stop-all-agents
   preview:
     name: Preview
@@ -55,6 +60,8 @@ jobs:
         uses: TanStack/config/.github/setup@e4b48f16568324f76f467aa4c2aac2f05db632c3 # main
       - name: Build Packages
         run: pnpm run build:all
+      - name: Check SSR platform entries
+        run: node --test scripts/ssr-entrypoints.test.mjs
       - name: Publish Previews
         run: pnpx pkg-pr-new publish --pnpm './packages/*' --template './examples/*/*'
   version-preview:
