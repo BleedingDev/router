@@ -61,7 +61,8 @@
   "dependencies": {
     "@tanstack/router-core": "workspace:*",
     "@tanstack/vue-router": "workspace:*",
-    "@tanstack/start-client-core": "workspace:*"
+    "@tanstack/start-client-core": "workspace:*",
+    "@tanstack/start-storage-context": "workspace:*"
   },
   "devDependencies": {
     "@vitejs/plugin-vue-jsx": "catalog:",

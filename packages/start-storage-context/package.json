@@ -58,10 +58,11 @@
   "engines": {
     "node": ">=22.12.0"
   },
-  "dependencies": {
+  "peerDependencies": {
     "@tanstack/router-core": "workspace:*"
   },
   "devDependencies": {
+    "@tanstack/router-core": "workspace:*",
     "vite": "*",
     "@types/node": ">=20",
     "@tanstack/vite-config": "catalog:",

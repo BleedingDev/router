@@ -112,9 +112,11 @@
     "node": ">=22.12.0"
   },
   "dependencies": {
+    "@tanstack/router-core": "workspace:*",
     "@tanstack/start-client-core": "workspace:*",
     "@tanstack/start-plugin-core": "workspace:*",
     "@tanstack/start-server-core": "workspace:*",
+    "@tanstack/start-storage-context": "workspace:*",
     "@tanstack/vue-router": "workspace:*",
     "@tanstack/vue-start-client": "workspace:*",
     "@tanstack/vue-start-server": "workspace:*",
