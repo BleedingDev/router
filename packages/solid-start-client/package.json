@@ -73,7 +73,8 @@
   "dependencies": {
     "@tanstack/router-core": "workspace:*",
     "@tanstack/solid-router": "workspace:*",
-    "@tanstack/start-client-core": "workspace:*"
+    "@tanstack/start-client-core": "workspace:*",
+    "@tanstack/start-storage-context": "workspace:*"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "catalog:",

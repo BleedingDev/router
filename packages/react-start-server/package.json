@@ -60,7 +60,9 @@
   "dependencies": {
     "@tanstack/react-router": "workspace:*",
     "@tanstack/router-core": "workspace:*",
-    "@tanstack/start-server-core": "workspace:*"
+    "@tanstack/start-client-core": "workspace:*",
+    "@tanstack/start-server-core": "workspace:*",
+    "@tanstack/start-storage-context": "workspace:*"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "catalog:",

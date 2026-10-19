@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+  rmSync,
+} from 'node:fs'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
@@ -40,6 +47,52 @@ const client = {
   },
   parents: [core, storage],
 }
+
+const packagesDirectory = fileURLToPath(
+  new URL('../packages/', import.meta.url),
+)
+const manifests = new Map(
+  readdirSync(packagesDirectory, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => {
+      const manifest = JSON.parse(
+        readFileSync(
+          path.join(packagesDirectory, entry.name, 'package.json'),
+          'utf8',
+        ),
+      )
+      return [manifest.name, manifest]
+    }),
+)
+const sharedStartPackages = [
+  '@tanstack/start-storage-context',
+  '@tanstack/start-client-core',
+  '@tanstack/start-server-core',
+]
+for (const consumer of manifests.values()) {
+  if (sharedStartPackages.includes(consumer.name)) {
+    continue
+  }
+  const parents = sharedStartPackages.filter(
+    (name) => consumer.dependencies?.[name],
+  )
+  if (!parents.length) {
+    continue
+  }
+  test(`${consumer.name} provides shared Start peers without installer auto-provisioning`, () => {
+    for (const name of parents) {
+      const parent = manifests.get(name)
+      for (const [peer, request] of Object.entries(parent.peerDependencies)) {
+        assert.equal(
+          consumer.dependencies[peer],
+          request,
+          `${consumer.name} must provide ${peer} beside its ${name} dependency`,
+        )
+      }
+    }
+  })
+}
+
 test('shared peer validation preserves the packed manifest and binds exact accepted parents', () => {
   const source = {
     name: '@tanstack/start-server-core',

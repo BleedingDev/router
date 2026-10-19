@@ -14222,6 +14222,9 @@ importers:
       '@tanstack/react-start-server':
         specifier: workspace:*
         version: link:../react-start-server
+      '@tanstack/router-core':
+        specifier: workspace:*
+        version: link:../router-core
       '@tanstack/router-utils':
         specifier: workspace:*
         version: link:../router-utils
@@ -14234,6 +14237,9 @@ importers:
       '@tanstack/start-server-core':
         specifier: workspace:*
         version: link:../start-server-core
+      '@tanstack/start-storage-context':
+        specifier: workspace:*
+        version: link:../start-storage-context
       pathe:
         specifier: 'catalog:'
         version: 2.0.3
@@ -14295,6 +14301,9 @@ importers:
       '@tanstack/start-client-core':
         specifier: workspace:*
         version: link:../start-client-core
+      '@tanstack/start-storage-context':
+        specifier: workspace:*
+        version: link:../start-storage-context
     devDependencies:
       '@arethetypeswrong/cli':
         specifier: 'catalog:'
@@ -14432,9 +14441,15 @@ importers:
       '@tanstack/router-core':
         specifier: workspace:*
         version: link:../router-core
+      '@tanstack/start-client-core':
+        specifier: workspace:*
+        version: link:../start-client-core
       '@tanstack/start-server-core':
         specifier: workspace:*
         version: link:../start-server-core
+      '@tanstack/start-storage-context':
+        specifier: workspace:*
+        version: link:../start-storage-context
     devDependencies:
       '@arethetypeswrong/cli':
         specifier: 'catalog:'
@@ -15065,6 +15080,9 @@ importers:
 
   packages/solid-start:
     dependencies:
+      '@tanstack/router-core':
+        specifier: workspace:*
+        version: link:../router-core
       '@tanstack/solid-router':
         specifier: workspace:*
         version: link:../solid-router
@@ -15083,6 +15101,9 @@ importers:
       '@tanstack/start-server-core':
         specifier: workspace:*
         version: link:../start-server-core
+      '@tanstack/start-storage-context':
+        specifier: workspace:*
+        version: link:../start-storage-context
       pathe:
         specifier: 'catalog:'
         version: 2.0.3
@@ -15138,6 +15159,9 @@ importers:
       '@tanstack/start-client-core':
         specifier: workspace:*
         version: link:../start-client-core
+      '@tanstack/start-storage-context':
+        specifier: workspace:*
+        version: link:../start-storage-context
       solid-js:
         specifier: 1.9.12
         version: 1.9.12
@@ -15178,9 +15202,15 @@ importers:
       '@tanstack/solid-router':
         specifier: workspace:*
         version: link:../solid-router
+      '@tanstack/start-client-core':
+        specifier: workspace:*
+        version: link:../start-client-core
       '@tanstack/start-server-core':
         specifier: workspace:*
         version: link:../start-server-core
+      '@tanstack/start-storage-context':
+        specifier: workspace:*
+        version: link:../start-storage-context
     devDependencies:
       '@arethetypeswrong/cli':
         specifier: 'catalog:'
@@ -15303,9 +15333,15 @@ importers:
       '@tanstack/router-utils':
         specifier: workspace:*
         version: link:../router-utils
+      '@tanstack/start-client-core':
+        specifier: workspace:*
+        version: link:../start-client-core
       '@tanstack/start-server-core':
         specifier: workspace:*
         version: link:../start-server-core
+      '@tanstack/start-storage-context':
+        specifier: workspace:*
+        version: link:../start-storage-context
       exsolve:
         specifier: ^1.1.1
         version: 1.1.1
@@ -15440,12 +15476,18 @@ importers:
       '@tanstack/react-start':
         specifier: workspace:*
         version: link:../react-start
+      '@tanstack/router-core':
+        specifier: workspace:*
+        version: link:../router-core
       '@tanstack/solid-start':
         specifier: workspace:*
         version: link:../solid-start
       '@tanstack/start-client-core':
         specifier: workspace:*
         version: link:../start-client-core
+      '@tanstack/start-storage-context':
+        specifier: workspace:*
+        version: link:../start-storage-context
       seroval:
         specifier: ^1.6.7
         version: 1.6.7
@@ -15723,6 +15765,9 @@ importers:
 
   packages/vue-start:
     dependencies:
+      '@tanstack/router-core':
+        specifier: workspace:*
+        version: link:../router-core
       '@tanstack/start-client-core':
         specifier: workspace:*
         version: link:../start-client-core
@@ -15732,6 +15777,9 @@ importers:
       '@tanstack/start-server-core':
         specifier: workspace:*
         version: link:../start-server-core
+      '@tanstack/start-storage-context':
+        specifier: workspace:*
+        version: link:../start-storage-context
       '@tanstack/vue-router':
         specifier: workspace:*
         version: link:../vue-router
@@ -15790,6 +15838,9 @@ importers:
       '@tanstack/start-client-core':
         specifier: workspace:*
         version: link:../start-client-core
+      '@tanstack/start-storage-context':
+        specifier: workspace:*
+        version: link:../start-storage-context
       '@tanstack/vue-router':
         specifier: workspace:*
         version: link:../vue-router
@@ -15827,9 +15878,15 @@ importers:
       '@tanstack/router-core':
         specifier: workspace:*
         version: link:../router-core
+      '@tanstack/start-client-core':
+        specifier: workspace:*
+        version: link:../start-client-core
       '@tanstack/start-server-core':
         specifier: workspace:*
         version: link:../start-server-core
+      '@tanstack/start-storage-context':
+        specifier: workspace:*
+        version: link:../start-storage-context
       '@tanstack/vue-router':
         specifier: workspace:*
         version: link:../vue-router

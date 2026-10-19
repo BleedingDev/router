@@ -73,7 +73,8 @@
   "dependencies": {
     "@tanstack/react-router": "workspace:*",
     "@tanstack/router-core": "workspace:*",
-    "@tanstack/start-client-core": "workspace:*"
+    "@tanstack/start-client-core": "workspace:*",
+    "@tanstack/start-storage-context": "workspace:*"
   },
   "devDependencies": {
     "@testing-library/react": "catalog:",
