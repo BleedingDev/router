@@ -63,7 +63,7 @@ jobs:
 
   review:
     name: Check intent skill coverage
-    if: github.event_name != 'pull_request'
+    if: github.repository == 'TanStack/router' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: write

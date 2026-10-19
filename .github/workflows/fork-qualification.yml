@@ -1,0 +1,336 @@
+name: Fork Qualification
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CI: 'true'
+  NX_NO_CLOUD: 'true'
+  NX_DAEMON: 'false'
+  SERVER_PRESET: node-server
+  TSR_TMP_DIR: ./tmp
+
+jobs:
+  plan:
+    name: Plan the full fork qualification
+    if: github.repository == 'BleedingDev/router'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      tested_sha: ${{ steps.plan.outputs.tested_sha }}
+      head_sha: ${{ steps.plan.outputs.head_sha }}
+      base_sha: ${{ steps.plan.outputs.base_sha }}
+      core_shard: ${{ steps.plan.outputs.core_shard }}
+      project_count: ${{ steps.plan.outputs.project_count }}
+    steps:
+      - name: Checkout the event commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Setup Tools
+        uses: TanStack/config/.github/setup@e4b48f16568324f76f467aa4c2aac2f05db632c3 # main
+      - name: Check formatting
+        run: pnpm exec prettier --experimental-cli --ignore-unknown '**/*' --check
+      - name: Resolve the full Nx project graph
+        run: pnpm nx graph --file="$RUNNER_TEMP/router-project-graph.json"
+      - name: Partition every project exactly once
+        id: plan
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict'
+          import { execFileSync } from 'node:child_process'
+          import { appendFileSync, readFileSync } from 'node:fs'
+          import { join } from 'node:path'
+
+          const testedSha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
+          assert.equal(testedSha, process.env.GITHUB_SHA)
+          const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'))
+          const headSha = event.pull_request?.head.sha ?? testedSha
+          let baseSha = event.before ?? testedSha
+          if (event.pull_request) {
+            const [first, second] = execFileSync('git', ['rev-parse', 'HEAD^1', 'HEAD^2'], { encoding: 'utf8' }).trim().split('\n')
+            assert.equal(second, headSha)
+            baseSha = first
+          }
+          for (const sha of [testedSha, headSha, baseSha]) {
+            assert.match(sha, /^[a-f0-9]{40}$/)
+          }
+          const graphBytes = readFileSync(join(process.env.RUNNER_TEMP, 'router-project-graph.json'))
+          const { graph } = JSON.parse(graphBytes)
+          assert.ok(graph && graph.nodes && typeof graph.nodes === 'object')
+          const targets = ['test:eslint', 'test:unit', 'test:e2e', 'test:types', 'test:build', 'build']
+          const projects = Object.keys(graph.nodes).sort()
+          assert.ok(projects.length >= 8)
+          for (const project of projects) {
+            assert.match(project, /^[A-Za-z0-9@/_.+-]+$/)
+          }
+          assert.ok(projects.includes('@tanstack/router-core'))
+          const include = Array.from({ length: 8 }, (_, index) => ({
+            shard: index + 1,
+            projects: projects.filter((_, offset) => offset % 8 === index),
+          }))
+          assert.deepEqual(include.flatMap((shard) => shard.projects).sort(), projects)
+          assert.equal(new Set(include.flatMap((shard) => shard.projects)).size, projects.length)
+          for (const shard of include) {
+            assert.ok(shard.projects.length > 0)
+            assert.ok(shard.projects.some((project) => targets.some((target) => graph.nodes[project].data.targets?.[target])))
+            shard.core = shard.projects.includes('@tanstack/router-core')
+          }
+          const coreShards = include.filter((shard) => shard.core)
+          assert.equal(coreShards.length, 1)
+          for (const target of ['build', 'test:eslint', 'test:unit', 'test:types', 'test:build']) {
+            assert.ok(graph.nodes['@tanstack/router-core'].data.targets?.[target], 'Missing core target: ' + target)
+          }
+          const output = {
+            matrix: JSON.stringify({ include }),
+            tested_sha: testedSha,
+            head_sha: headSha,
+            base_sha: baseSha,
+            core_shard: coreShards[0].shard,
+            project_count: projects.length,
+          }
+          for (const [key, value] of Object.entries(output)) {
+            appendFileSync(process.env.GITHUB_OUTPUT, key + '=' + value + '\n')
+          }
+          console.log(JSON.stringify({ ...output, matrix: { include } }, null, 2))
+          NODE
+
+  qualification:
+    name: Full fork qualification shard ${{ matrix.shard }}/8
+    needs: plan
+    if: github.repository == 'BleedingDev/router'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      TESTED_SHA: ${{ needs.plan.outputs.tested_sha }}
+      HEAD_SHA: ${{ needs.plan.outputs.head_sha }}
+      BASE_SHA: ${{ needs.plan.outputs.base_sha }}
+      PROJECTS_JSON: ${{ toJSON(matrix.projects) }}
+      SHARD: ${{ matrix.shard }}
+      CORE_ARTIFACT_DIR: router-core-cohort
+      PROJECT_COUNT: ${{ needs.plan.outputs.project_count }}
+    steps:
+      - name: Checkout the exact planned commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.plan.outputs.tested_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Setup Tools
+        uses: TanStack/config/.github/setup@e4b48f16568324f76f467aa4c2aac2f05db632c3 # main
+      - name: Install Chromium and system dependencies
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Run every existing qualification target for this shard
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict'
+          import { execFileSync } from 'node:child_process'
+
+          assert.equal(execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), process.env.TESTED_SHA)
+          const projects = JSON.parse(process.env.PROJECTS_JSON)
+          assert.ok(Array.isArray(projects) && projects.length > 0)
+          for (const project of projects) {
+            assert.match(project, /^[A-Za-z0-9@/_.+-]+$/)
+          }
+          execFileSync('pnpm', [
+            'nx', 'run-many',
+            '--targets=test:eslint,test:unit,test:e2e,test:types,test:build,build',
+            '--projects=' + projects.join(','),
+            '--parallel=3', '--outputStyle=stream', '--skipRemoteCache', '--skipNxCache',
+          ], { stdio: 'inherit' })
+          NODE
+      - name: Pack the core shard's accepted build
+        if: matrix.core
+        run: |
+          mkdir -p "$CORE_ARTIFACT_DIR"
+          pnpm --filter @tanstack/router-core pack --pack-destination "$GITHUB_WORKSPACE/$CORE_ARTIFACT_DIR"
+      - name: Verify archive identity and record provenance
+        if: matrix.core
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict'
+          import { createHash } from 'node:crypto'
+          import { execFileSync } from 'node:child_process'
+          import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
+          import { join } from 'node:path'
+
+          const sourceSha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
+          assert.equal(sourceSha, process.env.TESTED_SHA)
+          assert.equal(sourceSha, process.env.GITHUB_SHA)
+          assert.equal(process.env.GITHUB_REPOSITORY, 'BleedingDev/router')
+          const directory = process.env.CORE_ARTIFACT_DIR
+          const archives = readdirSync(directory)
+          assert.equal(archives.length, 1)
+          const archive = archives[0]
+          assert.match(archive, /^tanstack-router-core-[0-9][A-Za-z0-9.+-]*\.tgz$/)
+          const archivePath = join(directory, archive)
+          const packed = JSON.parse(execFileSync('tar', ['-xOf', archivePath, 'package/package.json'], { encoding: 'utf8' }))
+          const source = JSON.parse(readFileSync('packages/router-core/package.json', 'utf8'))
+          assert.equal(packed.name, '@tanstack/router-core')
+          assert.equal(packed.version, source.version)
+          for (const requests of [packed.dependencies, packed.optionalDependencies, packed.peerDependencies, packed.devDependencies]) {
+            for (const request of Object.values(requests ?? {})) {
+              assert.ok(!/^(?:workspace|catalog|link|file):/.test(request), 'Packed dependency must resolve outside the workspace')
+            }
+          }
+          const entries = new Set(execFileSync('tar', ['-tzf', archivePath], { encoding: 'utf8' }).trim().split('\n'))
+          function verifyExports(value) {
+            if (typeof value === 'string') {
+              assert.ok(value.startsWith('./'), 'Export must be package-local')
+              assert.ok(entries.has('package/' + value.slice(2)), 'Missing packed export: ' + value)
+            } else if (value !== null && typeof value === 'object') {
+              for (const target of Object.values(value)) {
+                verifyExports(target)
+              }
+            }
+          }
+          verifyExports(packed.exports)
+          const manifest = {
+            schemaVersion: 1,
+            repository: process.env.GITHUB_REPOSITORY,
+            sourceSha,
+            headSha: process.env.HEAD_SHA,
+            baseSha: process.env.BASE_SHA,
+            workflow: '.github/workflows/fork-qualification.yml',
+            runId: process.env.GITHUB_RUN_ID,
+            runAttempt: process.env.GITHUB_RUN_ATTEMPT,
+            event: process.env.GITHUB_EVENT_NAME,
+            ref: process.env.GITHUB_REF,
+            node: process.version,
+            pnpm: execFileSync('pnpm', ['--version'], { encoding: 'utf8' }).trim(),
+            qualification: {
+              targets: ['test:eslint', 'test:unit', 'test:e2e', 'test:types', 'test:build', 'build'],
+              shardCount: 8,
+              coreShard: Number(process.env.SHARD),
+              projectCount: Number(process.env.PROJECT_COUNT),
+            },
+            package: {
+              name: packed.name,
+              version: packed.version,
+              archive,
+              integrity: 'sha512-' + createHash('sha512').update(readFileSync(archivePath)).digest('base64'),
+              dependencies: packed.dependencies ?? {},
+            },
+          }
+          writeFileSync(join(directory, 'cohort.json'), JSON.stringify(manifest, null, 2) + '\n')
+          NODE
+      - name: Retain the core shard's intermediate archive
+        if: matrix.core
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: router-core-intermediate-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
+          path: router-core-cohort
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  accepted:
+    name: Accept exact router-core archive after all eight shards
+    needs: [plan, qualification]
+    if: github.repository == 'BleedingDev/router' && needs.plan.result == 'success' && needs.qualification.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      TESTED_SHA: ${{ needs.plan.outputs.tested_sha }}
+      HEAD_SHA: ${{ needs.plan.outputs.head_sha }}
+      BASE_SHA: ${{ needs.plan.outputs.base_sha }}
+      CORE_SHARD: ${{ needs.plan.outputs.core_shard }}
+      PROJECT_COUNT: ${{ needs.plan.outputs.project_count }}
+    steps:
+      - name: Checkout the exact planned commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.plan.outputs.tested_sha }}
+          persist-credentials: false
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - name: Download only this run attempt's core intermediate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: router-core-intermediate-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.plan.outputs.core_shard }}
+          path: ${{ runner.temp }}/router-core-cohort
+      - name: Verify exact accepted bytes and qualification identity
+        env:
+          CORE_ARTIFACT_DIR: ${{ runner.temp }}/router-core-cohort
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict'
+          import { createHash } from 'node:crypto'
+          import { execFileSync } from 'node:child_process'
+          import { readFileSync, readdirSync } from 'node:fs'
+          import { join } from 'node:path'
+
+          const directory = process.env.CORE_ARTIFACT_DIR
+          const manifest = JSON.parse(readFileSync(join(directory, 'cohort.json'), 'utf8'))
+          assert.equal(manifest.schemaVersion, 1)
+          assert.equal(manifest.repository, 'BleedingDev/router')
+          assert.equal(manifest.repository, process.env.GITHUB_REPOSITORY)
+          assert.equal(manifest.sourceSha, process.env.TESTED_SHA)
+          assert.equal(manifest.sourceSha, process.env.GITHUB_SHA)
+          assert.equal(manifest.headSha, process.env.HEAD_SHA)
+          assert.equal(manifest.baseSha, process.env.BASE_SHA)
+          assert.equal(manifest.workflow, '.github/workflows/fork-qualification.yml')
+          assert.equal(manifest.runId, process.env.GITHUB_RUN_ID)
+          assert.equal(manifest.runAttempt, process.env.GITHUB_RUN_ATTEMPT)
+          assert.equal(manifest.event, process.env.GITHUB_EVENT_NAME)
+          assert.equal(manifest.ref, process.env.GITHUB_REF)
+          assert.equal(manifest.qualification.shardCount, 8)
+          assert.equal(manifest.qualification.coreShard, Number(process.env.CORE_SHARD))
+          assert.equal(manifest.qualification.projectCount, Number(process.env.PROJECT_COUNT))
+          assert.deepEqual(manifest.qualification.targets, ['test:eslint', 'test:unit', 'test:e2e', 'test:types', 'test:build', 'build'])
+          const { archive, integrity } = manifest.package
+          assert.match(archive, /^tanstack-router-core-[0-9][A-Za-z0-9.+-]*\.tgz$/)
+          assert.deepEqual(readdirSync(directory).sort(), [archive, 'cohort.json'].sort())
+          const archivePath = join(directory, archive)
+          assert.equal('sha512-' + createHash('sha512').update(readFileSync(archivePath)).digest('base64'), integrity)
+          const packed = JSON.parse(execFileSync('tar', ['-xOf', archivePath, 'package/package.json'], { encoding: 'utf8' }))
+          const source = JSON.parse(readFileSync('packages/router-core/package.json', 'utf8'))
+          assert.equal(packed.name, '@tanstack/router-core')
+          assert.equal(packed.name, manifest.package.name)
+          assert.equal(packed.version, source.version)
+          assert.equal(packed.version, manifest.package.version)
+          assert.deepEqual(packed.dependencies ?? {}, manifest.package.dependencies)
+          for (const requests of [packed.dependencies, packed.optionalDependencies, packed.peerDependencies, packed.devDependencies]) {
+            for (const request of Object.values(requests ?? {})) {
+              assert.ok(!/^(?:workspace|catalog|link|file):/.test(request), 'Packed dependency must resolve outside the workspace')
+            }
+          }
+          const entries = new Set(execFileSync('tar', ['-tzf', archivePath], { encoding: 'utf8' }).trim().split('\n'))
+          function verifyExports(value) {
+            if (typeof value === 'string') {
+              assert.ok(value.startsWith('./'), 'Export must be package-local')
+              assert.ok(entries.has('package/' + value.slice(2)), 'Missing packed export: ' + value)
+            } else if (value !== null && typeof value === 'object') {
+              for (const target of Object.values(value)) {
+                verifyExports(target)
+              }
+            }
+          }
+          verifyExports(packed.exports)
+          NODE
+      - name: Retain the exact archive accepted by all shards
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: router-core-cohort-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/router-core-cohort
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
